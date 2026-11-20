@@ -1,5 +1,5 @@
-// Spectrogram heatmap: time across, notes up the side (same axes as the pitch roll),
-// colour = loudness in dB. Computed in the browser with a Hann-windowed STFT.
+// Spectrogram heatmap: time across, a fixed log-frequency axis (50 Hz - 8 kHz) up the side,
+// colour = loudness in dB. The frequency axis never rescales; only time follows the view. Computed in the browser with a Hann-windowed STFT.
 //
 // Sources:
 //   file          the decoded upload (state.file.spec)
@@ -11,10 +11,12 @@
 
 const SPEC_N = 4096;              // FFT size: ~11 Hz bins at 44.1 kHz
 const SPEC_HOP = 512;
-const SPEC_LO = 28;               // E1 (MIDI) .. E7: rows cover everything the roll can show
-const SPEC_HI = 100;
+const SPEC_F_MIN = 50, SPEC_F_MAX = 8000;   // fixed frequency axis, Hz
+const hzToMidi = (f) => 69 + 12 * Math.log2(f / 440);
+const SPEC_LO = hzToMidi(SPEC_F_MIN);       // rows are spaced evenly in log frequency
+const SPEC_HI = hzToMidi(SPEC_F_MAX);
 const SPEC_RPS = 4;               // rows per semitone
-const SPEC_ROWS = (SPEC_HI - SPEC_LO) * SPEC_RPS;
+const SPEC_ROWS = Math.round((SPEC_HI - SPEC_LO) * SPEC_RPS);
 const SPEC_DB_MIN = -85, SPEC_DB_MAX = -5;
 const SPEC_MAX_COLS = 30000;      // keep the image canvas under browser limits for long files
 
@@ -236,7 +238,7 @@ function drawSpec() {
   const c = state.colors;
   const view = currentView();
   const plotH = h - AXIS_H, plotW = w - GUTTER;
-  const { lo, hi } = state.rollRange || { lo: 48, hi: 72 };
+  const lo = SPEC_LO, hi = SPEC_HI;   // fixed: 50 Hz .. 8 kHz
   const y = (m) => plotH - ((m - lo) / (hi - lo)) * plotH;
   const src = specSource(view);
   syncSpecToggle();
@@ -247,8 +249,8 @@ function drawSpec() {
     const { S } = src;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    // Source rows for the visible note range (image row 0 = top = SPEC_HI).
-    const sy0 = (SPEC_HI - hi) * SPEC_RPS, sy1 = (SPEC_HI - lo) * SPEC_RPS;
+    // The whole frequency axis, always (image row 0 = top = SPEC_F_MAX).
+    const sy0 = 0, sy1 = SPEC_ROWS;
     const c0 = src.colAt(view.t0), c1 = src.colAt(view.t1);
     const X = (col) => GUTTER + ((col - c0) / (c1 - c0)) * plotW;
     const blit = (imgX0, imgX1, absCol0) => {   // image columns [imgX0, imgX1) start at absolute column absCol0
@@ -268,18 +270,19 @@ function drawSpec() {
     }
   }
 
-  // Note labels and grid, matching the pitch roll.
-  const pcs = keySet(), tonic = state.settings.tonic, laneH = plotH / (hi - lo);
+  // Log-frequency axis: fixed ticks in Hz.
   ctx.font = '600 11px Inter, ui-sans-serif, system-ui, sans-serif';
   ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
-  for (let m = Math.ceil(lo); m <= Math.floor(hi); m++) {
-    const pc = mod12(m), yc = y(m);
-    if (pc === 0) { ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(GUTTER, Math.round(yc + laneH / 2), plotW, 1); }
-    if ((laneH >= 12 || pc === 0 || (laneH >= 7 && pcs.has(pc))) && yc > 6 && yc < plotH - 4) {
-      ctx.fillStyle = pcs.has(pc) ? (pc === tonic ? c.accent : c.text) : c.faint;
-      ctx.fillText(noteName(m), GUTTER - 8, yc);
-    }
+  for (const f of [50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 8000]) {
+    const yc = y(hzToMidi(f));
+    const major = [100, 1000].includes(f);
+    ctx.fillStyle = major ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.1)';
+    if (yc > 1 && yc < plotH - 1) ctx.fillRect(GUTTER, Math.round(yc), plotW, 1);
+    ctx.fillStyle = major ? c.text : c.muted;
+    ctx.fillText(f >= 1000 ? `${f / 1000}k` : `${f}`, GUTTER - 8, Math.min(plotH - 6, Math.max(6, yc)));
   }
+  ctx.fillStyle = c.faint; ctx.textAlign = 'left';
+  ctx.fillText('Hz', 4, 8);
   ctx.fillStyle = c.border;
   ctx.fillRect(GUTTER, plotH, plotW, 1);
 

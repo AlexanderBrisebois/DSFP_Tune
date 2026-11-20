@@ -236,11 +236,12 @@ function currentView() {
     const L = state.live;
     let t1 = Math.max(LIVE_WINDOW_S, L.samples / L.sampleRate);
     const pt = takePlayhead();
-    if (pt !== null) {
-      // Follow the playhead, three quarters of the way across.
-      L.viewT1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
-    }
     if (!L.running && L.viewT1) t1 = L.viewT1;
+    const offScreen = pt !== null && (pt < t1 - LIVE_WINDOW_S || pt > t1);
+    if (pt !== null && ((!recPlayer.paused && !scrub) || offScreen)) {
+      // Follow the playhead, three quarters of the way across.
+      L.viewT1 = t1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
+    }
     return { t0: t1 - LIVE_WINDOW_S, t1, live: true };
   }
   if (state.source === 'file' && state.file) return { ...state.view, live: false };
@@ -319,9 +320,19 @@ function drawWave() {
 
 /** Where the recorded take is playing (seconds), or null when it isn't. */
 function takePlayhead() {
-  const L = state.live;
-  if (!L || L.running || !state.recording || !recPlayer.dataset.which) return null;
-  return recPlayer.currentTime;
+  const L = state.live, R = state.recording;
+  if (!L || L.running || !R) return null;
+  if (recPlayer.dataset.which) return recPlayer.currentTime;
+  return Number.isFinite(R.cursor) ? R.cursor : null;   // where Play will start from
+}
+
+/** Move the take's playback position (also while it plays). */
+function seekTake(t) {
+  const R = state.recording;
+  if (!R) return;
+  R.cursor = Math.max(0, Math.min(R.duration, t));
+  if (recPlayer.dataset.which) recPlayer.currentTime = R.cursor;
+  requestDraw();
 }
 
 function drawPlayhead(ctx, w, h, view, x0 = 0) {
@@ -697,10 +708,26 @@ function fileRange(midi) {
 }
 
 // Zoom / pan / seek on the waveform and the pitch roll.
-let drag = null, rollHover = null;
+let drag = null, rollHover = null, scrub = false;
+const takeShown = () => state.source === 'mic' && state.live && !state.live.running && state.recording;
+
 function attachViewControls(canvas, x0) {
+  const playheadX = () => {   // canvas x of the playhead, or null
+    const v = currentView(); if (!v) return null;
+    const t = v.live ? takePlayhead() : $('player').currentTime;
+    if (t === null || t < v.t0 || t > v.t1) return null;
+    return x0 + ((t - v.t0) / (v.t1 - v.t0)) * (canvas.clientWidth - x0);
+  };
+  const nearPlayhead = (e) => {
+    const px = playheadX(); if (px === null) return false;
+    return Math.abs(e.clientX - canvas.getBoundingClientRect().left - px) <= 7;
+  };
+  const seek = (e) => {
+    const t = timeAt(e);
+    if (takeShown()) seekTake(t); else { $('player').currentTime = t; requestDraw(); }
+  };
   const timeAt = (e) => {
-    const r = canvas.getBoundingClientRect(), v = state.view;
+    const r = canvas.getBoundingClientRect(), v = currentView();
     const frac = Math.max(0, Math.min(1, (e.clientX - r.left - x0) / (r.width - x0)));
     return v.t0 + frac * (v.t1 - v.t0);
   };
@@ -722,8 +749,13 @@ function attachViewControls(canvas, x0) {
     requestDraw();
   }, { passive: false });
   canvas.addEventListener('pointerdown', (e) => {
-    if (state.source !== 'file' || !state.file) return;
-    drag = { x: e.clientX, view: { ...state.view }, moved: false, canvas };
+    const take = takeShown();
+    if (!take && (state.source !== 'file' || !state.file)) return;
+    // On a take every drag scrubs; on a file, grab the playhead to scrub or drag elsewhere to pan.
+    const isScrub = take || nearPlayhead(e);
+    drag = { x: e.clientX, view: state.view ? { ...state.view } : null, moved: false, canvas, scrub: isScrub };
+    scrub = isScrub;
+    if (isScrub) seek(e);
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
@@ -732,7 +764,9 @@ function attachViewControls(canvas, x0) {
       rollHover = state.file && state.source === 'file' && e.clientX - r.left > x0 ? { x: e.clientX - r.left } : null;
       requestDraw();
     }
+    if (!drag) canvas.style.cursor = nearPlayhead(e) || takeShown() ? 'ew-resize' : '';
     if (!drag || drag.canvas !== canvas) return;
+    if (drag.scrub) { drag.moved = true; seek(e); return; }
     const dx = e.clientX - drag.x;
     if (Math.abs(dx) > 3) drag.moved = true;
     if (!drag.moved) return;
@@ -743,8 +777,8 @@ function attachViewControls(canvas, x0) {
   });
   canvas.addEventListener('pointerleave', () => { if (rollHover) { rollHover = null; requestDraw(); } });
   canvas.addEventListener('pointerup', (e) => {
-    if (drag && !drag.moved) { $('player').currentTime = timeAt(e); requestDraw(); }
-    drag = null;
+    if (drag && !drag.moved && !drag.scrub) seek(e);
+    drag = null; scrub = false;
   });
   canvas.addEventListener('dblclick', () => {
     if (state.file) { state.view = { t0: 0, t1: state.file.duration }; requestDraw(); }
@@ -983,14 +1017,18 @@ function playRecording(which) {
   const url = which === 'tuned' ? R.tunedUrl : R.originalUrl;
   if (!url) return;
   $('player').pause();
+  let from = recPlayer.dataset.which ? recPlayer.currentTime : (R.cursor || 0);
+  if (from >= R.duration - 0.05) from = 0;   // at the end: start again
   recPlayer.src = url;
   recPlayer.dataset.which = which;
-  recPlayer.currentTime = 0;
+  recPlayer.currentTime = from;
+  recPlayer.addEventListener('loadedmetadata', () => { recPlayer.currentTime = from; }, { once: true });
   recPlayer.play().catch((err) => setRecHint(`Playback failed: ${err.message}`, 'error'));
   syncRecordingButtons();
 }
 
 function stopRecordingPlayback() {
+  if (state.recording && recPlayer.dataset.which) state.recording.cursor = recPlayer.currentTime;
   recPlayer.pause();
   recPlayer.dataset.which = '';
   syncRecordingButtons();
