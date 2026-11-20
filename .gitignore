@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.env
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Anaconda project
+envs/
+.anaconda/
+
+# Data / model artifacts (remove lines if you want these tracked)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
