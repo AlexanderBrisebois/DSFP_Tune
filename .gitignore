@@ -29,3 +29,14 @@ envs/
 .DS_Store
 .vscode/
 .idea/
+
+# Audio inputs/outputs (large); keep the folders
+data/audio/*
+data/output/*
+!data/audio/.gitkeep
+!data/output/.gitkeep
+
+# C++ build outputs
+cpp/build/
+*.so
+*.dylib
