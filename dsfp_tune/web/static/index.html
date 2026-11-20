@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSFP Tune</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23101217'/%3E%3Cpath d='M4 18c3 0 3-8 6-8s3 12 6 12 3-14 6-14 3 10 6 10' stroke='%232dd4bf' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    try { const t = localStorage.getItem('dsfp-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <header class="brand">
+      <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M4 18c3 0 3-8 6-8s3 12 6 12 3-14 6-14 3 10 6 10"/></svg>
+      <div>
+        <h1>DSFP Tune</h1>
+        <p>Pitch analysis dashboard</p>
+      </div>
+      <button id="themeToggle" class="icon-button" type="button" title="Switch light/dark" aria-label="Switch light or dark theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="moon" d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/><g class="sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg>
+      </button>
+    </header>
+
+    <section class="card">
+      <h2>Input</h2>
+      <div class="segmented" role="tablist" id="sourceTabs">
+        <button type="button" role="tab" data-source="file" aria-selected="true">Audio file</button>
+        <button type="button" role="tab" data-source="mic" aria-selected="false">Microphone</button>
+      </div>
+
+      <div class="source-pane" data-pane="file">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+          <span class="dropzone__title">Drop an .mp3 here</span>
+          <span class="dropzone__hint">or click to choose (WAV, FLAC, M4A work too)</span>
+        </label>
+        <div class="file-info" id="fileInfo" hidden>
+          <div class="file-info__name" id="fileName"></div>
+          <div class="file-info__meta" id="fileMeta"></div>
+        </div>
+      </div>
+
+      <div class="source-pane" data-pane="mic" hidden>
+        <button type="button" class="primary-button" id="micButton">
+          <span class="rec-dot"></span><span id="micButtonLabel">Start microphone</span>
+        </button>
+        <div class="meter" aria-label="Input level"><div class="meter__fill" id="micMeter"></div></div>
+        <p class="hint" id="micHint">Your browser will ask for microphone access. Audio goes only to the local server on this computer.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>Snapping</h2>
+        <span class="save-state" id="saveState"></span>
+      </div>
+      <label class="field-label">Snap to</label>
+      <div class="segmented segmented--stack" id="snapModes">
+        <button type="button" data-mode="off">Off</button>
+        <button type="button" data-mode="chromatic">Nearest note</button>
+        <button type="button" data-mode="key">Nearest note in key</button>
+      </div>
+
+      <div class="key-fields" id="keyFields">
+        <div class="field">
+          <label class="field-label" for="tonicSelect">Key</label>
+          <select id="tonicSelect"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="scaleSelect">Scale</label>
+          <select id="scaleSelect"></select>
+        </div>
+      </div>
+      <div class="scale-chips" id="scaleChips"></div>
+      <p class="hint">Pitch correction isn't built yet. These settings are saved for it, and the dashboard previews the note each frame would snap to.</p>
+    </section>
+
+    <footer class="sidebar__foot" id="serverStatus">Connecting to local server…</footer>
+  </aside>
+
+  <main class="main">
+    <section class="readout card">
+      <div class="readout__note">
+        <span class="readout__label">Detected</span>
+        <span class="readout__big" id="noteName">–</span>
+        <span class="readout__sub" id="noteHz">no pitch</span>
+      </div>
+      <div class="tuner">
+        <div class="tuner__scale">
+          <span>−50</span><span>−25</span><span>0</span><span>+25</span><span>+50</span>
+        </div>
+        <div class="tuner__track">
+          <div class="tuner__zone"></div>
+          <div class="tuner__needle" id="needle"></div>
+        </div>
+        <div class="tuner__cents" id="noteCents">cents off the nearest note</div>
+      </div>
+      <div class="readout__note readout__note--target">
+        <span class="readout__label">Snaps to</span>
+        <span class="readout__big" id="targetName">–</span>
+        <span class="readout__sub" id="targetShift">&nbsp;</span>
+      </div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel__head">
+        <h2>Waveform</h2>
+        <div class="transport" id="transport">
+          <button type="button" class="icon-button" id="playButton" disabled title="Play / pause (space)" aria-label="Play or pause">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play" d="M8 5v14l11-7z"/><g class="pause"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>
+          </button>
+          <span class="time" id="timeLabel">0:00.0 / 0:00.0</span>
+        </div>
+        <span class="panel__hint" id="viewHint"></span>
+      </div>
+      <div class="canvas-wrap canvas-wrap--wave"><canvas id="waveCanvas"></canvas><div class="empty" id="waveEmpty">Load an audio file or start the microphone</div></div>
+    </section>
+
+    <section class="card panel panel--grow">
+      <div class="panel__head">
+        <h2>Pitch on the scale</h2>
+        <div class="legend">
+          <span><i class="sw sw--in"></i>in key</span>
+          <span><i class="sw sw--out"></i>out of key</span>
+          <span><i class="sw sw--target"></i>snap target</span>
+          <span><i class="sw sw--lane"></i>scale notes</span>
+        </div>
+      </div>
+      <div class="canvas-wrap canvas-wrap--roll"><canvas id="rollCanvas"></canvas><div class="busy" id="busy" hidden><span class="spinner"></span><span id="busyText">Detecting pitch…</span></div></div>
+    </section>
+
+    <section class="card panel">
+      <div class="panel__head">
+        <h2>Where the notes land</h2>
+        <span class="panel__hint" id="histHint">time spent on each note, all octaves</span>
+      </div>
+      <div class="canvas-wrap canvas-wrap--keys"><canvas id="keysCanvas"></canvas></div>
+    </section>
+  </main>
+</div>
+<audio id="player" preload="auto"></audio>
+<script src="app.js"></script>
+</body>
+</html>

@@ -7,6 +7,7 @@
     python tune.py record --seconds 10           # record, save WAV, plot pitch
     python tune.py pitch data/audio/take.wav     # plot pitch of a file
     python tune.py devices                       # list microphones
+    python tune.py web                           # dashboard in the browser (file or mic)
 """
 
 from __future__ import annotations
@@ -212,6 +213,12 @@ def cmd_devices(args: argparse.Namespace) -> None:
         print(f"{star} {d['index']:>2}  {d['name']}  ({d['channels']} ch, {d['default_samplerate']:.0f} Hz)")
 
 
+def cmd_web(args: argparse.Namespace) -> None:
+    from dsfp_tune.web.server import serve
+
+    serve(args.host, args.port, open_browser=not args.no_browser, quiet=not args.verbose)
+
+
 def _add_pitch_range(p: argparse.ArgumentParser) -> None:
     p.add_argument("--f-min", type=float, default=70.0, help="lowest pitch to detect, Hz (default 70)")
     p.add_argument("--f-max", type=float, default=1000.0, help="highest pitch to detect, Hz (default 1000)")
@@ -259,6 +266,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("devices", help="list microphones / audio inputs")
     p.set_defaults(func=cmd_devices)
+
+    p = sub.add_parser("web", help="open the dashboard in the browser (audio file or microphone)")
+    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1, this computer only)")
+    p.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+    p.add_argument("--verbose", action="store_true", help="log every request")
+    p.set_defaults(func=cmd_web)
 
     return parser
 

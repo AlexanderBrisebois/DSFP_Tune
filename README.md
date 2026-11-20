@@ -52,6 +52,7 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | YIN pitch detector (FFT-based), offline and streaming — `dsfp_tune/analysis/yin.py` | ✅ Done, tested on synthetic signals |
 | Microphone input: record, stream, list devices — `dsfp_tune/io/microphone.py` | ✅ Done |
 | Pitch plots: live window, recording/file analysis — `dsfp_tune/plotting.py` | ✅ Done |
+| Web dashboard (`python tune.py web`): file or browser mic, waveform, pitch on the scale, snap settings — `dsfp_tune/web` | ✅ Done (snap settings are saved, not applied yet) |
 | Test with real vocal recordings and tune YIN settings (threshold, range) | 🔜 Next |
 | Target note: snap to key, hysteresis, retune speed (builds on `dsfp_tune/theory`) | ⏳ Planned |
 | Pitch shifter (phase vocoder or PSOLA) with formant preservation — `dsfp_tune/synthesis` | ⏳ Planned |
@@ -69,6 +70,7 @@ DSFP_Tune/
 │   ├── theory/          # notes <-> frequencies, keys/scales           [done]
 │   ├── analysis/        # pitch (f0) detection: YIN                    [done]
 │   ├── plotting.py      # pitch plots (static + live window)           [done]
+│   ├── web/             # browser dashboard: server + static page      [done]
 │   └── synthesis/       # pitch shifting / resynthesis                 [later]
 ├── AGENTS/              # per-contributor agent status files (coordination)
 ├── cpp/                 # optional C++ (pybind11) kernels for speed
@@ -114,6 +116,30 @@ python tune.py devices                                     # list microphones; u
 ```
 
 `inspect --save` writes an `.npz` with `time`, `amplitude` and `sample_rate` arrays.
+
+### Web dashboard
+
+```bash
+python tune.py web                       # opens http://localhost:8000/ in your browser
+python tune.py web --port 8080 --no-browser
+```
+
+A local server (standard library only, no extra packages) runs the same `load_audio` + YIN code as the CLI.
+In the page:
+
+- **Input:** drop or choose an MP3 (or WAV/FLAC/M4A), or switch to **Microphone**. The browser captures the mic
+  and streams the samples to the local server's `YinStream`, so the mic permission is the browser's, not the
+  terminal's. Audio never leaves your computer.
+- **Waveform** with play/pause and a playhead. Scroll to zoom, drag to pan, double-click to reset, click to seek.
+- **Pitch on the scale:** the detected pitch over time on a one-row-per-semitone grid. The rows of the chosen key
+  are shaded (tonic darker); the line is teal on in-key notes and amber off-key; a dashed violet line shows the
+  note each frame would snap to.
+- **Where the notes land:** how much of the pitched time falls on each of the 12 notes (all octaves), laid out
+  from the tonic, with scale degrees.
+- **Snapping:** off, nearest note (chromatic), or nearest note in a key (12 tonics x 15 scales). The choice is
+  saved to `data/output/dashboard_settings.json`; the pitch-correction stage can read it with
+  `dsfp_tune.web.load_settings()`, which returns a `SnapSettings(mode, tonic, scale)` with a `.key` property.
+- Dark theme by default; the button at the top left switches to light.
 
 The pitch plots:
 

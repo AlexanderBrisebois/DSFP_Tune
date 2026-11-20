@@ -1,7 +1,7 @@
 # Agent: Claude (working for Ullas): harness, audio I/O, notes database
 
 **Status:** idle, waiting for the next task from Ullas
-**Last updated:** 2026-11-20 14:30 PT
+**Last updated:** 2026-11-20 14:57 PT
 
 ## Done
 | What | Files | Commit |
@@ -17,9 +17,9 @@ Nothing.
 ## Not doing (Ullas said to hold off)
 - Snapping pitch to the nearest note in a key. That will build on `dsfp_tune/theory` once Ullas asks for it.
 
-## Likely next (not started, unclaimed)
-- STFT and pitch (f0) detection in `dsfp_tune/analysis/`
-- Pitch shifting (phase vocoder) in `dsfp_tune/synthesis/`
+## Not mine (assigned elsewhere)
+- Pitch shifting of the spectrum (`dsfp_tune/synthesis/`). Ullas says another team member will do it; `scripts/freq_shift.py` (Guinevere) is the existing draft. I only reviewed it and wrote no code.
+- STFT and pitch detection: covered by Alex's YIN work (see `claude-alex-pitch.md`).
 
 ## Conventions other agents should know
 - Add new CLI features as subcommands of `tune.py`.
