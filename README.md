@@ -39,6 +39,14 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 - **The microphone is polled inside GUI windows.** Matplotlib's macOS window loop holds Python's GIL, which starves
   audio-callback threads (no audio arrives). The live window therefore reads the microphone from its animation timer
   (`MicrophoneStream(use_callback=False)`). Elsewhere, the callback-and-queue mode is used.
+- **Pitch shifting with an FFT frequency shifter (phase vocoder).** This builds on the idea in
+  `scripts/freq_shift.py`: move the spectral power at f to f × shift, then inverse-FFT. To work on real audio it runs
+  frame by frame (STFT, 2048 points, 75% overlap), moves *every* harmonic by the same ratio, and tracks each bin's phase
+  so frames join without clicks. At ratio 1 it passes audio through exactly, so unpitched sounds are untouched.
+  Formants move with the pitch, which is fine for small corrections; formant preservation is a later improvement.
+- **The target note is chosen from a ~120 ms running median of the pitch**, so vibrato that swings past the midpoint
+  between two notes doesn't flip the target. Each frame's instantaneous pitch is what gets corrected, and a jump of
+  more than ¾ of a semitone switches notes immediately.
 - **Offline first, then real time.** Develop and validate in Python/NumPy on audio files, then build a streaming
   version, and port the hot loops to C++ (see [cpp/README.md](cpp/README.md)) if needed.
 
@@ -52,11 +60,12 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | YIN pitch detector (FFT-based), offline and streaming — `dsfp_tune/analysis/yin.py` | ✅ Done, tested on synthetic signals |
 | Microphone input: record, stream, list devices — `dsfp_tune/io/microphone.py` | ✅ Done |
 | Pitch plots: live window, recording/file analysis — `dsfp_tune/plotting.py` | ✅ Done |
-| Test with real vocal recordings and tune YIN settings (threshold, range) | 🔜 Next |
-| Target note: snap to key, hysteresis, retune speed (builds on `dsfp_tune/theory`) | ⏳ Planned |
-| Pitch shifter (phase vocoder or PSOLA) with formant preservation — `dsfp_tune/synthesis` | ⏳ Planned |
-| End-to-end offline tool: file in → corrected file out | ⏳ Planned |
-| Real-time correction (block-based, low latency) | ⏳ Planned |
+| Target note: nearest note or in-key note, hysteresis, retune speed — `dsfp_tune/correction.py` | ✅ Done |
+| FFT frequency shifter (phase vocoder), streaming — `dsfp_tune/synthesis/freq_shift.py` | ✅ Done (formants not preserved yet) |
+| Autotune end to end: mic or file in → corrected audio, before/after plot — `tune.py autotune` | ✅ Done, tested on synthetic voices |
+| Real-time autotune through headphones — `tune.py autotune --live` | ✅ Works; ~120 ms total latency on the built-in mic |
+| Test on real vocal recordings; tune YIN and correction settings | 🔜 Next |
+| Formant preservation, phase locking (less "phasey" sound), lower live latency | ⏳ Planned |
 | C++ kernels / plugin | ⏳ Later, if needed |
 
 ## Layout
@@ -68,8 +77,9 @@ DSFP_Tune/
 │   ├── io/              # audio loading/saving, microphone input       [done]
 │   ├── theory/          # notes <-> frequencies, keys/scales           [done]
 │   ├── analysis/        # pitch (f0) detection: YIN                    [done]
-│   ├── plotting.py      # pitch plots (static + live window)           [done]
-│   └── synthesis/       # pitch shifting / resynthesis                 [later]
+│   ├── synthesis/       # FFT frequency shifter (pitch shift)          [done]
+│   ├── correction.py    # autotune: target note + retune + shifting    [done]
+│   └── plotting.py      # pitch plots (static, live, before/after)     [done]
 ├── AGENTS/              # per-contributor agent status files (coordination)
 ├── cpp/                 # optional C++ (pybind11) kernels for speed
 ├── tests/               # pytest suite
@@ -111,7 +121,17 @@ python tune.py record --seconds 10 --out data/audio/scale.wav
 python tune.py pitch data/audio/scale.wav                  # plot the pitch of any audio file
 python tune.py pitch take.wav --save take.png --no-show    # export the plot instead of showing it
 python tune.py devices                                     # list microphones; use --device <index or name>
+
+python tune.py autotune                                    # record 5 s, correct, play original + corrected, plot
+python tune.py autotune data/audio/take.wav                # correct a file → data/output/take_tuned.wav
+python tune.py autotune --key "A minor" --retune-ms 0      # only A-minor notes, instant (robotic) correction
+python tune.py autotune --retune-ms 150                    # gentle correction that keeps vibrato
+python tune.py autotune --live                             # real time: mic → corrected voice → headphones (Ctrl+C)
 ```
+
+`autotune --live` refuses to run when the output is the built-in speakers, because the microphone would pick up the
+corrected voice and feed back. Plug in headphones or choose one with `--output-device`; `--allow-speakers` overrides
+the check. The default key is chromatic (any semitone). The default `--retune-ms` is 25.
 
 `inspect --save` writes an `.npz` with `time`, `amplitude` and `sample_rate` arrays.
 
@@ -125,6 +145,10 @@ The pitch plots:
      a higher one, that's an octave error;
   3. cents off the note being held, with a green ±10 cent band. The held note is found with a running median, so
      vibrato shows as a smooth wave.
+
+The **autotune plot** shows the sung pitch (grey), the target notes (orange, dashed) and the corrected output (blue,
+re-measured with YIN on the output audio) on a note grid where in-key notes are darker. Below it is cents off target,
+before and after.
 
 ## Loading audio in code
 
@@ -172,6 +196,22 @@ for est in stream.push(block): ...
 
 Algorithm reference: A. de Cheveigné & H. Kawahara, *"YIN, a fundamental frequency estimator for speech and music"*,
 JASA 111(4), 2002. The module docstring in [dsfp_tune/analysis/yin.py](dsfp_tune/analysis/yin.py) walks through each step.
+
+## Pitch correction in code
+
+```python
+from dsfp_tune.correction import PitchCorrector, correct_pitch
+from dsfp_tune.synthesis import freq_shift
+
+y = freq_shift(x, 2 ** (1 / 12))                       # whole signal up one semitone
+
+result = correct_pitch(x, 44100, key="A minor", retune_ms=25)   # offline, no delay
+result.samples, result.times, result.f0, result.target_midi, result.correction
+
+pc = PitchCorrector(44100, key="A minor", n_fft=1024)  # streaming (any block size)
+out_block = pc.process(in_block)                       # delayed by pc.latency samples
+pc.latest                                              # CorrectionFrame: f0, target_midi, correction, ratio
+```
 
 ## Notes and keys database
 

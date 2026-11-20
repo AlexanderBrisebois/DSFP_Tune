@@ -19,7 +19,7 @@ from matplotlib.ticker import FixedFormatter, FixedLocator, FuncFormatter, NullF
 from dsfp_tune.analysis import PitchTrack, YinStream, yin_track
 from dsfp_tune.theory import freq_to_midi, midi_to_freq, midi_to_name, nearest_note
 
-__all__ = ["LivePitchPlot", "cents_from_held_note", "note_ticks", "plot_pitch", "spectrogram"]
+__all__ = ["LivePitchPlot", "cents_from_held_note", "note_ticks", "plot_correction", "plot_pitch", "spectrogram"]
 
 F0_COLOR = "#2ec4ff"
 _NATURALS = {0, 2, 4, 5, 7, 9, 11}  # C D E F G A B (pitch classes)
@@ -167,6 +167,76 @@ def plot_pitch(
         summary = (f"{100 * v.mean():.0f}% voiced · median {name} {c:+.0f}¢ · "
                    f"mean |offset| {np.nanmean(np.abs(cents)):.0f}¢")
         ax_w.set_title(f"{title or 'Pitch analysis'}\n{summary}", fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+def plot_correction(original: np.ndarray, result, title: str | None = None, f_min: float = 70.0, f_max: float = 1000.0):
+    """Before/after figure for :func:`dsfp_tune.correction.correct_pitch`.
+
+    Top: pitch on a semitone grid. Grey = what was sung, orange = target notes, blue = the
+    corrected output (measured again with YIN on the output audio). In-key notes have
+    darker grid lines. Bottom: cents away from the target note, before and after.
+
+    ``result`` is a :class:`~dsfp_tune.correction.CorrectionResult`.
+    """
+    sr = result.sample_rate
+    out_track = yin_track(result.samples, sr, hop_length=256, f_min=f_min, f_max=f_max)
+    in_midi = np.where(result.voiced, freq_to_midi(result.f0), np.nan)
+    out_midi = np.where(out_track.voiced, freq_to_midi(out_track.f0), np.nan)
+    target = result.target_midi
+
+    # Target at the output-track times (nearest pitch estimate).
+    if len(result.times):
+        idx = np.clip(np.searchsorted(result.times, out_track.times), 0, len(result.times) - 1)
+        target_at_out = target[idx]
+    else:
+        target_at_out = np.full(len(out_track.times), np.nan)
+    cents_in = 100 * (in_midi - target)
+    cents_out = 100 * (out_midi - target_at_out)
+
+    fig, (ax_p, ax_c) = plt.subplots(2, 1, figsize=(12, 7.5), sharex=True, gridspec_kw=dict(height_ratios=[3, 1.3]))
+
+    voiced_vals = np.concatenate([in_midi[~np.isnan(in_midi)], target[~np.isnan(target)]])
+    if voiced_vals.size:
+        lo, hi = np.percentile(voiced_vals, [1, 99])
+        centre, span = (lo + hi) / 2, max(8.0, hi - lo + 3.0)
+        lo, hi = centre - span / 2, centre + span / 2
+    else:
+        lo, hi = 50.0, 62.0
+    ax_p.set_ylim(lo, hi)
+    labelled, all_notes = note_ticks(lo, hi)
+    ax_p.set_yticks(labelled, [midi_to_name(n) for n in labelled])
+    key_pcs = set(result.key.pitch_classes) if result.key is not None else set(range(12))
+    for n in all_notes:
+        in_key = n % 12 in key_pcs
+        ax_p.axhline(n, color="0.55" if in_key else "0.88", linewidth=0.9 if in_key else 0.6, zorder=0)
+
+    ax_p.plot(result.times, in_midi, color="0.55", linewidth=1.6, label="sung (input)")
+    ax_p.step(result.times, target, where="mid", color="#f0883e", linewidth=1.4, linestyle="--", label="target note")
+    ax_p.plot(out_track.times, out_midi, color=F0_COLOR, linewidth=2.0, label="corrected (output)")
+    ax_p.set_ylabel("note")
+    ax_p.legend(loc="upper right", framealpha=0.9)
+
+    ax_c.axhspan(-10, 10, color="#3fb950", alpha=0.15, linewidth=0)
+    ax_c.axhline(0, color="0.5", linewidth=0.8)
+    ax_c.plot(result.times, cents_in, color="0.55", linewidth=1.2, label="before")
+    ax_c.plot(out_track.times, cents_out, color=F0_COLOR, linewidth=1.4, label="after")
+    ax_c.set_ylim(-60, 60)
+    ax_c.set_yticks([-50, -25, 0, 25, 50])
+    ax_c.set_ylabel("cents off target")
+    ax_c.set_xlabel("time (s)")
+    ax_c.set_xlim(0, max(len(result.samples) / sr, 1e-3))
+    ax_c.legend(loc="upper right", framealpha=0.9, ncol=2)
+
+    key_name = result.key.name if result.key is not None else "chromatic"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        before, after = np.nanmean(np.abs(cents_in)), np.nanmean(np.abs(cents_out))
+    summary = f"key: {key_name}"
+    if np.isfinite(before) and np.isfinite(after):
+        summary += f" · mean |off target|: {before:.0f}¢ → {after:.0f}¢"
+    ax_p.set_title(f"{title or 'Pitch correction'}\n{summary}", fontsize=10)
     fig.tight_layout()
     return fig
 

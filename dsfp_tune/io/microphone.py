@@ -32,7 +32,7 @@ import numpy as np
 
 from dsfp_tune.io.audio_io import AudioSignal
 
-__all__ = ["MicrophoneStream", "list_input_devices", "record"]
+__all__ = ["DuplexStream", "MicrophoneStream", "default_output_name", "list_input_devices", "play", "record"]
 
 
 def _sd():
@@ -179,6 +179,103 @@ class MicrophoneStream:
             yield self.read()
 
     def __enter__(self) -> "MicrophoneStream":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+
+def default_output_name(device: int | str | None = None) -> str:
+    """Name of the output device that ``device`` (default: system default) refers to."""
+    sd = _sd()
+    return str(sd.query_devices(device, kind="output")["name"]) if device is None else str(
+        sd.query_devices(device)["name"]
+    )
+
+
+def play(samples: np.ndarray, sample_rate: int, device: int | str | None = None) -> None:
+    """Play mono audio and wait until it finishes."""
+    sd = _sd()
+    sd.play(np.asarray(samples, dtype=np.float32), samplerate=sample_rate, device=device)
+    sd.wait()
+
+
+class DuplexStream:
+    """Microphone in -> ``process(block)`` -> output device, in real time.
+
+    ``process`` receives mono float32 blocks and must return the same number of samples; it
+    runs on PortAudio's audio thread, so it must be fast (well under ``blocksize / sample_rate``
+    seconds). The mono result is copied to every output channel.
+
+    Use headphones: with speakers, the microphone hears the output and it feeds back.
+    """
+
+    def __init__(
+        self,
+        process,
+        sample_rate: int = 44100,
+        blocksize: int = 256,
+        input_device: int | str | None = None,
+        output_device: int | str | None = None,
+        latency: float | str = 0.005,
+    ) -> None:
+        self.process = process
+        self.sample_rate = int(sample_rate)
+        self.blocksize = int(blocksize)
+        self.input_device = input_device
+        self.output_device = output_device
+        self.latency = latency
+        self.xruns = 0  # input overflows / output underflows reported by the driver
+        self.error: BaseException | None = None
+        self._stream = None
+
+    def _callback(self, indata, outdata, frames, time, status) -> None:
+        if status and (status.input_overflow or status.output_underflow):
+            self.xruns += 1
+        try:
+            y = np.asarray(self.process(indata[:, 0]), dtype=np.float32)
+            outdata[:] = np.clip(y, -1.0, 1.0)[:, None]
+        except Exception as exc:  # never let an exception kill the audio thread silently
+            outdata.fill(0)
+            self.error = exc
+            raise self._sd.CallbackAbort from exc
+
+    def start(self) -> "DuplexStream":
+        sd = self._sd = _sd()
+        out_info = sd.query_devices(self.output_device, kind="output") if self.output_device is None else \
+            sd.query_devices(self.output_device)
+        out_channels = max(1, min(2, int(out_info["max_output_channels"])))
+        self._stream = sd.Stream(
+            samplerate=self.sample_rate,
+            blocksize=self.blocksize,
+            device=(self.input_device, self.output_device),
+            channels=(1, out_channels),
+            dtype="float32",
+            latency=self.latency,
+            callback=self._callback,
+        )
+        self._stream.start()
+        return self
+
+    @property
+    def active(self) -> bool:
+        return self._stream is not None and bool(self._stream.active)
+
+    @property
+    def total_latency(self) -> float:
+        """Driver input + output latency in seconds (excludes the processing's own delay)."""
+        if self._stream is None:
+            return 0.0
+        lat = self._stream.latency
+        return float(sum(lat)) if isinstance(lat, (tuple, list)) else float(lat)
+
+    def stop(self) -> None:
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+    def __enter__(self) -> "DuplexStream":
         return self.start()
 
     def __exit__(self, *exc) -> None:
