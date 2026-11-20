@@ -1,7 +1,7 @@
-# Agent: Claude (working for Alex): pitch detection, microphone input, pitch plots
+# Agent: Claude (working for Alex): pitch detection, microphone, plots, autotune pipeline
 
 **Status:** idle, waiting for the next task from Alex
-**Last updated:** 2026-11-20 14:34 PT
+**Last updated:** 2026-11-20 14:52 PT
 
 ## Done
 | What | Files | Commit |
@@ -11,19 +11,25 @@
 | Microphone input (`sounddevice`): `record()`, `MicrophoneStream` (callback/queue mode, or polling mode with `use_callback=False`), `list_input_devices()` | `dsfp_tune/io/microphone.py`, `tests/test_microphone.py` | `414dc06` |
 | `save_wav()` (16-bit PCM), plus a stdlib `wave` fallback in `load_audio` so WAV files load without ffmpeg or soundfile | `dsfp_tune/io/audio_io.py` | `414dc06` |
 | Pitch plots: `plot_pitch()` (waveform, spectrogram with f0 line, cents off the held note) and `LivePitchPlot` (scrolling live window from the microphone) | `dsfp_tune/plotting.py`, `tests/test_plotting.py` | `414dc06` |
-| Merged into Ullas's restructure: moved the work above from `src/dsfp_tune/` into `dsfp_tune/`; turned the CLI into `tune.py` subcommands `live`, `record`, `pitch`, `devices`; dropped `pyproject.toml`; added `sounddevice` to `requirements.txt`; combined the READMEs | `tune.py`, `README.md`, `requirements.txt` | merge commit after `414dc06` |
-| Added `nearest_note(freq) -> (name, cents)` to the theory module and removed a duplicate note-helper module I had in `analysis/`. All note/frequency conversion now goes through `dsfp_tune/theory` | `dsfp_tune/theory/notes.py`, `dsfp_tune/theory/__init__.py` | merge commit after `414dc06` |
+| Merged into Ullas's restructure: moved the work above into `dsfp_tune/`; turned the CLI into `tune.py` subcommands `live`, `record`, `pitch`, `devices`; dropped `pyproject.toml`; added `sounddevice` to `requirements.txt`; combined the READMEs | `tune.py`, `README.md`, `requirements.txt` | `8554d32` |
+| Added `nearest_note(freq) -> (name, cents)` to the theory module and removed a duplicate note-helper module I had in `analysis/`. All note/frequency conversion now goes through `dsfp_tune/theory` | `dsfp_tune/theory/notes.py`, `dsfp_tune/theory/__init__.py` | `8554d32` |
+| **FFT frequency shifter** (streaming phase vocoder): `FrequencyShifter.process(block, ratio)` and `freq_shift(x, ratio)`. Builds on Guinevere's `scripts/freq_shift.py` idea (move power at f to f × shift, then inverse FFT), adding STFT frames, shifting all harmonics, and phase tracking. Exact pass-through at ratio 1; tested within 2 cents for −3 to +12 semitones; 0.1 ms per 512-sample hop | `dsfp_tune/synthesis/freq_shift.py`, `tests/test_correction.py` | this commit |
+| **Autotune pipeline**: `PitchCorrector` (streaming: YIN → `NoteSnapper` target note, chromatic or any `theory.Key` → retune smoothing → shifter) and `correct_pitch()` (offline). Includes hysteresis, a 120 ms median for note choice (vibrato doesn't flip notes), a hold through short unvoiced gaps, and `max_correction` against octave errors | `dsfp_tune/correction.py`, `tests/test_correction.py` | this commit |
+| Real-time duplex audio (`DuplexStream`: mic → process → output) and `play()` | `dsfp_tune/io/microphone.py` | this commit |
+| Before/after plot `plot_correction()` (sung vs target vs corrected on a note grid, cents off target) | `dsfp_tune/plotting.py` | this commit |
+| CLI `python tune.py autotune [file] [--key "A minor"] [--retune-ms N] [--live]`: records (or loads), corrects, saves `data/output/<name>_tuned.wav`, plays original then corrected, plots. `--live` refuses to run on built-in speakers (feedback risk) without `--allow-speakers` | `tune.py`, README | this commit |
 
 ## In progress
 Nothing.
 
 ## Likely next (not started)
-- Try the detector on real vocal recordings (`python tune.py record`, `python tune.py pitch <file>`) and tune the YIN settings (threshold, `f_min`/`f_max`).
-- Target-note logic (snap to key, hysteresis, retune speed). It builds on `dsfp_tune/theory`, which is Ullas's area, so coordinate before starting.
-- Pitch shifting in `dsfp_tune/synthesis/` is still unclaimed.
+- Try `python tune.py autotune` on real singing; tune the defaults (`retune_ms`, hysteresis, YIN threshold).
+- Sound quality: phase locking in the shifter (less "phasey"), and formant preservation via spectral envelope.
+- Live latency is about 120 ms on the MacBook's built-in mic: roughly 95 ms of driver buffering plus 23 ms shifter frame. A USB interface or smaller frames would help.
 
 ## Notes for other agents
-- **Pitch detection is done:** "STFT and pitch (f0) detection" from Ullas's "likely next" list is covered by YIN. YIN doesn't need an STFT; it uses unwindowed FFTs internally. An STFT for pitch shifting would be separate.
-- **Microphone inside GUI windows:** matplotlib's macOS window loop holds the GIL and starves PortAudio callback threads, so no audio arrives. Use `MicrophoneStream(use_callback=False)` and read from a GUI timer, as `LivePitchPlot.run()` does.
+- **Guinevere's `scripts/freq_shift.py` (as of `403f139`) was left untouched.** As written, it returns `ifft` of only the bins near f0: given 1 s of audio it returns 45 complex samples, the second `sel` is unused, and nothing moves to `f0*shift`. So the pipeline uses `dsfp_tune/synthesis/freq_shift.py`, which implements the same idea. Guinevere, compare the two, or swap in your version behind the same `process(block, ratio)` interface.
+- **Target-note logic now exists:** `dsfp_tune/correction.py`. It *reads* `dsfp_tune/theory` (`Key`, `parse_key`, `freq_to_midi`) and doesn't change it. Ullas had held off on key snapping; this is where it lives now.
+- **Microphone inside GUI windows:** matplotlib's macOS window loop holds the GIL and starves PortAudio callback threads, so no audio arrives. Use `MicrophoneStream(use_callback=False)` and read from a GUI timer, as `LivePitchPlot.run()` does. Real-time correction (`DuplexStream`) runs without a GUI for this reason.
 - **Plots in tests:** `tests/conftest.py` sets the Agg matplotlib backend, so tests never open windows.
-- **Microphone in tests:** use the fake `sounddevice` module in `tests/test_microphone.py` (`fake_sd` fixture). No hardware needed.
+- **Hardware in tests:** fake `sounddevice` modules in `tests/test_microphone.py` and `tests/test_correction.py` stand in for real devices.

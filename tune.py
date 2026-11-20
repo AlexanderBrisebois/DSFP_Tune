@@ -8,6 +8,9 @@
     python tune.py pitch data/audio/take.wav     # plot pitch of a file
     python tune.py devices                       # list microphones
     python tune.py web                           # dashboard in the browser (file or mic)
+    python tune.py autotune                      # record, pitch-correct, play back, plot
+    python tune.py autotune take.wav --key "A minor" --retune-ms 0
+    python tune.py autotune --live               # real-time correction (headphones!)
 """
 
 from __future__ import annotations
@@ -114,12 +117,12 @@ def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True) -> 
     plt.close(fig)
 
 
-def cmd_record(args: argparse.Namespace) -> None:
-    from dsfp_tune.io import save_wav
+def _record_from_mic(seconds: float, sr: int, device):
+    """Record, print level info and warnings. Returns ``(AudioSignal, peak)``."""
     from dsfp_tune.io.microphone import record
 
-    print(f"Recording {args.seconds:g} s at {args.sr} Hz ... sing or speak now")
-    sig = record(args.seconds, sample_rate=args.sr, device=_device_arg(args.device))
+    print(f"Recording {seconds:g} s at {sr} Hz ... sing or speak now")
+    sig = record(seconds, sample_rate=sr, device=_device_arg(device))
     peak = float(np.abs(sig.samples).max())
     rms = float(np.sqrt(np.mean(sig.samples.astype(np.float64) ** 2)))
     print(f"done: peak={peak:.3f}  rms={rms:.4f} ({20 * np.log10(max(rms, 1e-10)):.0f} dBFS)")
@@ -130,13 +133,23 @@ def cmd_record(args: argparse.Namespace) -> None:
         print("WARNING: clipping - move back from the mic or lower the input gain.", file=sys.stderr)
     elif rms < 0.003:
         print("WARNING: very quiet - move closer to the mic or raise the input gain.", file=sys.stderr)
+    return sig, peak
 
+
+def _recording_path(out: str | None) -> Path:
+    return Path(out) if out else Path("data/audio") / f"mic_{datetime.now():%Y%m%d_%H%M%S}.wav"
+
+
+def cmd_record(args: argparse.Namespace) -> None:
+    from dsfp_tune.io import save_wav
+
+    sig, peak = _record_from_mic(args.seconds, args.sr, args.device)
     if peak > 0:
         _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max)
 
     out = None
     if not args.no_save:
-        out = Path(args.out) if args.out else Path("data/audio") / f"mic_{datetime.now():%Y%m%d_%H%M%S}.wav"
+        out = _recording_path(args.out)
         save_wav(out, sig)
         print(f"saved {out}")
 
@@ -203,6 +216,139 @@ def cmd_pitch(args: argparse.Namespace) -> None:
     _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max)
     _show_pitch_plot(sig.samples, sig.sample_rate, args.f_min, args.f_max, title=str(args.path),
                      save=args.save, show=not args.no_show)
+
+
+# ---------------------------------------------------------------------------
+# Autotune: pitch detection + target note + frequency shifting
+# ---------------------------------------------------------------------------
+
+
+def _parse_key_arg(text: str | None):
+    if not text:
+        return None
+    from dsfp_tune.theory import parse_key
+
+    try:
+        return parse_key(text)
+    except ValueError as exc:
+        raise SystemExit(f"tune.py autotune: bad --key {text!r}: {exc}")
+
+
+def _correction_settings(args: argparse.Namespace, default_fft: int) -> dict:
+    return dict(
+        key=_parse_key_arg(args.key),
+        retune_ms=args.retune_ms,
+        f_min=args.f_min,
+        f_max=args.f_max,
+        n_fft=args.fft_size or default_fft,
+    )
+
+
+def cmd_autotune(args: argparse.Namespace) -> None:
+    if args.live:
+        _autotune_live(args)
+        return
+
+    from dsfp_tune.correction import correct_pitch
+    from dsfp_tune.io import save_wav
+    from dsfp_tune.theory import midi_to_name
+
+    settings = _correction_settings(args, default_fft=2048)  # validate --key before recording
+    if args.path:
+        sig = load_audio(args.path)
+        stem = Path(args.path).stem
+        print(sig)
+    else:
+        sig, peak = _record_from_mic(args.seconds, args.sr, args.device)
+        if peak == 0.0:
+            return
+        rec_path = None if args.no_save else _recording_path(None)
+        if rec_path:
+            save_wav(rec_path, sig)
+            print(f"saved recording {rec_path}")
+        stem = rec_path.stem if rec_path else "mic"
+
+    key = settings["key"]
+    print(f"correcting: key {key.name if key else 'chromatic (any semitone)'}, retune {args.retune_ms:g} ms ...")
+    result = correct_pitch(sig.samples, sig.sample_rate, **settings)
+
+    shifted = result.correction[result.voiced] * 100
+    if shifted.size:
+        targets = [midi_to_name(int(m)) for m in result.target_midi[~np.isnan(result.target_midi)]]
+        notes = list(dict.fromkeys(targets))  # unique, in order sung
+        print(f"voiced {100 * result.voiced.mean():.0f}% · mean shift {np.mean(np.abs(shifted)):.0f} cents "
+              f"(max {np.max(np.abs(shifted)):.0f}) · notes: {' '.join(notes[:16])}{' ...' if len(notes) > 16 else ''}")
+    else:
+        print("no pitched audio found - nothing to correct")
+
+    out = Path(args.out) if args.out else Path("data/output") / f"{stem}_tuned.wav"
+    save_wav(out, result.samples, result.sample_rate)
+    print(f"saved corrected audio {out}")
+
+    if not args.no_play:
+        from dsfp_tune.io.microphone import play
+
+        print("playing original ...")
+        play(sig.samples, sig.sample_rate, device=_device_arg(args.output_device))
+        print("playing corrected ...")
+        play(result.samples, result.sample_rate, device=_device_arg(args.output_device))
+
+    if not args.no_plot:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("Plotting needs matplotlib: pip install matplotlib (or pass --no-plot)", file=sys.stderr)
+            return
+        from dsfp_tune.plotting import plot_correction
+
+        fig = plot_correction(sig.samples, result, title=str(out), f_min=args.f_min, f_max=args.f_max)
+        print("showing plot (close the window to continue)")
+        plt.show()
+        plt.close(fig)
+
+
+def _autotune_live(args: argparse.Namespace) -> None:
+    from dsfp_tune.correction import PitchCorrector
+    from dsfp_tune.io.microphone import DuplexStream, default_output_name
+    from dsfp_tune.theory import midi_to_name, nearest_note
+
+    out_dev = _device_arg(args.output_device)
+    out_name = default_output_name(out_dev)
+    if "speaker" in out_name.lower() and not args.allow_speakers:
+        raise SystemExit(
+            f"Output device is '{out_name}'. Plug in headphones (or choose one with --output-device): "
+            "through speakers the microphone hears the corrected voice and it feeds back.\n"
+            "Pass --allow-speakers to run anyway, with the volume low."
+        )
+
+    settings = _correction_settings(args, default_fft=1024)  # 1024: lower latency for live use
+    pc = PitchCorrector(args.sr, **settings)
+    duplex = DuplexStream(pc.process, args.sr, blocksize=256, input_device=_device_arg(args.device),
+                          output_device=out_dev)
+    key = settings["key"]
+    with duplex:
+        total_ms = (pc.latency / args.sr + duplex.total_latency) * 1000
+        print(f"Live autotune -> {out_name} | key {key.name if key else 'chromatic'} | "
+              f"retune {args.retune_ms:g} ms | latency ~{total_ms:.0f} ms. Ctrl+C to stop.")
+        try:
+            while duplex.active:
+                time.sleep(0.05)
+                f = pc.latest
+                if f is not None and f.voiced and not np.isnan(f.target_midi):
+                    name, cents = nearest_note(f.f0)
+                    line = (f"sung {name:<4}{cents:+4.0f}c ({f.f0:6.1f} Hz)  ->  {midi_to_name(int(f.target_midi)):<4}"
+                            f" shift {100 * f.correction:+4.0f}c")
+                else:
+                    line = "      --  (no pitch: passing audio through)"
+                print("\r" + line.ljust(78), end="", flush=True)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            print()
+    if duplex.error:
+        print(f"audio processing stopped with an error: {duplex.error!r}", file=sys.stderr)
+    if duplex.xruns:
+        print(f"note: {duplex.xruns} audio dropouts (buffer over/underruns)")
 
 
 def cmd_devices(args: argparse.Namespace) -> None:
@@ -273,6 +419,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     p.add_argument("--verbose", action="store_true", help="log every request")
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser(
+        "autotune",
+        help="pitch-correct the microphone (record or --live) or an audio file",
+        description="Detect pitch (YIN), snap it to the nearest note (optionally in a key), and shift it "
+        "there with the FFT frequency shifter. Without a file: record from the microphone, correct, play "
+        "back and plot. With --live: correct in real time to your headphones.",
+    )
+    p.add_argument("path", nargs="?", help="audio file to correct (default: record from the microphone)")
+    p.add_argument("--key", help='restrict to a key, e.g. "A minor", "F# major", "Bb dorian" (default: any semitone)')
+    p.add_argument("--retune-ms", type=float, default=25.0,
+                   help="how fast pitch glides to the note: 0 = instant/robotic, 100+ = natural (default 25)")
+    p.add_argument("--live", action="store_true", help="real-time: microphone -> corrected audio -> headphones")
+    p.add_argument("--seconds", type=float, default=5.0, help="recording length (default 5)")
+    p.add_argument("--out", help="corrected WAV path (default data/output/<name>_tuned.wav)")
+    p.add_argument("--no-save", action="store_true", help="don't save the raw microphone recording")
+    p.add_argument("--no-play", action="store_true", help="don't play original and corrected audio")
+    p.add_argument("--no-plot", action="store_true", help="don't open the before/after plot")
+    _add_mic(p)
+    p.add_argument("--output-device", help="output device index or name (see `python -m sounddevice`)")
+    p.add_argument("--allow-speakers", action="store_true", help="allow --live through speakers (feedback risk)")
+    p.add_argument("--fft-size", type=int, help="shifter frame size (default 2048; 1024 with --live)")
+    _add_pitch_range(p)
+    p.set_defaults(func=cmd_autotune)
 
     return parser
 
