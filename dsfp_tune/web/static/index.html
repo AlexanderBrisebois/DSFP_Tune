@@ -166,6 +166,7 @@
         <span class="panel__hint" id="viewHint"></span>
       </div>
       <div class="canvas-wrap canvas-wrap--wave"><canvas id="waveCanvas"></canvas><div class="empty" id="waveEmpty">Load an audio file or start the microphone</div></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
     </section>
 
     <div class="split">
@@ -180,6 +181,7 @@
         </div>
       </div>
       <div class="canvas-wrap canvas-wrap--roll"><canvas id="rollCanvas"></canvas><div class="busy" id="busy" hidden><span class="spinner"></span><span id="busyText">Detecting pitch…</span></div></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
     </section>
 
     <section class="card panel panel--grow">
@@ -194,6 +196,7 @@
         <div class="spec-scale"><span>quiet</span><i></i><span>loud</span></div>
       </div>
       <div class="canvas-wrap canvas-wrap--roll canvas-wrap--spec"><canvas id="specCanvas"></canvas></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
     </section>
     </div>
 
@@ -208,6 +211,7 @@
 </div>
 <audio id="player" preload="auto"></audio>
 <script src="spectrogram.js"></script>
+<script src="scroll.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -238,7 +238,8 @@ function currentView() {
     const pt = takePlayhead();
     if (!L.running && L.viewT1) t1 = L.viewT1;
     const offScreen = pt !== null && (pt < t1 - LIVE_WINDOW_S || pt > t1);
-    if (pt !== null && ((!recPlayer.paused && !scrub) || offScreen)) {
+    const userScrolled = performance.now() - (L.userScroll || 0) < 1500;
+    if (pt !== null && !userScrolled && ((!recPlayer.paused && !scrub) || offScreen)) {
       // Follow the playhead, three quarters of the way across.
       L.viewT1 = t1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
     }
@@ -623,7 +624,7 @@ function drawReadout() {
 }
 
 function drawAll() {
-  drawWave(); drawRoll(); drawSpec(); drawKeys(); drawReadout();
+  drawWave(); drawRoll(); drawSpec(); drawKeys(); drawReadout(); syncTimebars();
   const F = state.file;
   $('timeLabel').textContent = `${fmtTime($('player').currentTime)} / ${fmtTime(F ? F.duration : 0)}`;
 }
@@ -675,12 +676,12 @@ async function loadFile(file) {
       name: file.name, url, duration: audio.duration, sampleRate: audio.sampleRate, samples,
       peaks: buildPeaks(samples), track, midi, hist: histogram(midi), range: fileRange(midi),
     };
-    state.view = { t0: 0, t1: audio.duration };
+    state.view = { t0: 0, t1: audio.duration > 30 ? 20 : audio.duration };
     specForFile(state.file);
     $('fileMeta').textContent = `${fmtTime(audio.duration)} · ${track.sample_rate / 1000} kHz · `
       + `${Math.round(track.voiced_fraction * 100)}% pitched · analysed in ${track.analysis_seconds.toFixed(1)} s`;
     $('playButton').disabled = false;
-    $('viewHint').textContent = 'scroll to zoom · drag to pan · double-click to reset · click to seek';
+    $('viewHint').textContent = 'scroll to move through time · pinch or Ctrl+scroll to zoom · drag the playhead to seek';
   } catch (err) {
     $('fileMeta').textContent = `Couldn't load this file: ${err.message}`;
     $('fileMeta').classList.add('hint', 'is-error');
@@ -732,15 +733,18 @@ function attachViewControls(canvas, x0) {
     return v.t0 + frac * (v.t1 - v.t0);
   };
   canvas.addEventListener('wheel', (e) => {
-    if (state.source !== 'file' || !state.file) return;
+    const tl = timeline();
+    if (!tl) return;
     e.preventDefault();
+    const zoom = (e.ctrlKey || e.metaKey) && state.source === 'file';   // trackpad pinch arrives as Ctrl+wheel
+    if (!zoom) {
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      scrollTimeBy((d / canvas.clientWidth) * (tl.t1 - tl.t0));
+      return;
+    }
     const v = state.view, D = state.file.duration;
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) {
-      const d = ((e.shiftKey ? e.deltaY : e.deltaX) / canvas.clientWidth) * (v.t1 - v.t0);
-      const t0 = Math.max(0, Math.min(D - (v.t1 - v.t0), v.t0 + d));
-      state.view = { t0, t1: t0 + (v.t1 - v.t0) };
-    } else {
-      const t = timeAt(e), f = Math.exp(e.deltaY * 0.0015);
+    {
+      const t = timeAt(e), f = Math.exp(e.deltaY * 0.005);
       const span = Math.max(0.25, Math.min(D, (v.t1 - v.t0) * f));
       let t0 = t - ((t - v.t0) / (v.t1 - v.t0)) * span;
       t0 = Math.max(0, Math.min(D - span, t0));
@@ -1137,7 +1141,7 @@ function setSource(src) {
   for (const b of $('sourceTabs').querySelectorAll('button')) b.setAttribute('aria-selected', String(b.dataset.source === src));
   for (const p of document.querySelectorAll('.source-pane')) p.hidden = p.dataset.pane !== src;
   $('transport').style.visibility = src === 'file' ? 'visible' : 'hidden';
-  $('viewHint').textContent = src === 'file' && state.file ? 'scroll to zoom · drag to pan · double-click to reset · click to seek'
+  $('viewHint').textContent = src === 'file' && state.file ? 'scroll to move through time · pinch or Ctrl+scroll to zoom · drag the playhead to seek'
     : src === 'mic' ? `last ${LIVE_WINDOW_S} seconds` : '';
   if (src === 'file') { stopMic(); stopRecordingPlayback(); } else $('player').pause();
   requestDraw();
@@ -1196,6 +1200,7 @@ async function init() {
   attachViewControls($('rollCanvas'), GUTTER);
   attachViewControls($('specCanvas'), GUTTER);
   initSpec();
+  initTimebars();
   new ResizeObserver(requestDraw).observe(document.querySelector('.main'));
 
   try {
