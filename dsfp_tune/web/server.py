@@ -10,9 +10,13 @@ POST /api/analyze           audio file as the raw body -> pitch track (load_audi
 POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one YinStream per mic session
 POST /api/live/<id>         raw little-endian float32 mono samples -> pitch estimates
 POST /api/live/<id>/stop    forget the session
+POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..
+                            raw little-endian float32 mono samples (a microphone recording)
+                            -> pitch-corrected WAV (dsfp_tune.correction.correct_pitch);
+                            summary JSON in the X-Autotune-Summary header
 
-The browser decodes the file itself for the waveform and playback; the server only
-does the pitch analysis, using the same code as the CLI.
+The browser decodes the file itself for the waveform and playback; the server does the
+pitch analysis and correction, using the same code as the CLI.
 """
 
 from __future__ import annotations
@@ -26,17 +30,21 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
 from dsfp_tune.analysis import YinStream, yin_track
-from dsfp_tune.io import AudioLoadError, load_audio
+from dsfp_tune.correction import correct_pitch
+from dsfp_tune.io import AudioLoadError, load_audio, wav_bytes
 from dsfp_tune.theory import NOTE_NAMES_FLAT, NOTE_NAMES_SHARP, SCALES, Key
 from dsfp_tune.web.settings import SNAP_MODES, SnapSettings, load_settings, save_settings
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 LIVE_IDLE_SECONDS = 120.0
+MAX_AUTOTUNE_SECONDS = 600.0
+DEFAULT_RETUNE_MS = 25.0
 
 # Pitch range: the CLI defaults (70-1000 Hz cover singing voices).
 F_MIN = 70.0
@@ -98,6 +106,42 @@ def analyze_file(path: str | Path) -> dict:
     return out
 
 
+def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettings,
+                     retune_ms: float = DEFAULT_RETUNE_MS) -> tuple[bytes, dict]:
+    """Pitch-correct a mono recording with the dashboard's snap settings.
+
+    Returns ``(wav_bytes, summary)``. Mode ``chromatic`` snaps to the nearest semitone,
+    ``key`` to the nearest note of ``settings.key``; ``off`` is rejected (nothing to do).
+    """
+    sample_rate = int(sample_rate)
+    if settings.mode == "off":
+        raise ValueError("snapping is off: choose 'Nearest note' or 'Nearest note in key' to autotune")
+    if not 8000 <= sample_rate <= 192000:
+        raise ValueError(f"unsupported sample rate {sample_rate}")
+    if not 0.0 <= retune_ms <= 1000.0:
+        raise ValueError("retune_ms must be between 0 and 1000")
+    x = np.nan_to_num(np.asarray(samples, dtype=np.float64))
+    if len(x) == 0:
+        raise ValueError("empty recording")
+    if len(x) > MAX_AUTOTUNE_SECONDS * sample_rate:
+        raise ValueError(f"recording longer than {MAX_AUTOTUNE_SECONDS / 60:.0f} minutes")
+
+    key = settings.key
+    result = correct_pitch(x, sample_rate, key=key, retune_ms=retune_ms,
+                           f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
+    shift = np.abs(result.correction[result.voiced]) * 100.0
+    summary = {
+        "mode": settings.mode,
+        "key": key.name if key is not None else None,
+        "retune_ms": float(retune_ms),
+        "duration": len(x) / sample_rate,
+        "voiced_fraction": float(result.voiced.mean()) if len(result.voiced) else 0.0,
+        "mean_shift_cents": round(float(shift.mean()), 1) if shift.size else 0.0,
+        "max_shift_cents": round(float(shift.max()), 1) if shift.size else 0.0,
+    }
+    return wav_bytes(result.samples, sample_rate), summary
+
+
 class LiveSessions:
     """One streaming YIN per browser microphone session."""
 
@@ -152,11 +196,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self.quiet:
             super().log_message(fmt, *args)
 
-    def _send(self, status: int, body: bytes, ctype: str) -> None:
+    def _send(self, status: int, body: bytes, ctype: str, headers: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -192,6 +238,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._json(s.to_dict())
             if path == "/api/analyze":
                 return self._analyze()
+            if path == "/api/autotune":
+                return self._autotune()
             if path == "/api/live/start":
                 data = json.loads(self._body() or b"{}")
                 return self._json(self.live.start(data.get("sample_rate", 48000)))
@@ -226,6 +274,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         result["source"] = name
         result["analysis_seconds"] = round(time.monotonic() - started, 3)
         return self._json(result)
+
+    def _autotune(self):
+        q = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        if "sample_rate" not in q:
+            raise ValueError("sample_rate query parameter is required")
+        saved = load_settings(self.settings_path).to_dict()
+        settings = SnapSettings.from_dict({k: q.get(k, saved[k]) for k in ("mode", "tonic", "scale")})
+        raw = self._body()
+        samples = np.frombuffer(raw[: len(raw) // 4 * 4], dtype="<f4")
+        started = time.monotonic()
+        wav, summary = autotune_samples(samples, int(float(q["sample_rate"])), settings,
+                                        float(q.get("retune_ms", DEFAULT_RETUNE_MS)))
+        summary["processing_seconds"] = round(time.monotonic() - started, 3)
+        return self._send(200, wav, "audio/wav", {"X-Autotune-Summary": json.dumps(summary, separators=(",", ":"))})
 
     def _static(self, path: str):
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -266,4 +328,4 @@ def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True, 
         server.server_close()
 
 
-__all__ = ["analyze_file", "analyze_samples", "make_server", "serve", "theory_payload"]
+__all__ = ["analyze_file", "analyze_samples", "autotune_samples", "make_server", "serve", "theory_payload"]

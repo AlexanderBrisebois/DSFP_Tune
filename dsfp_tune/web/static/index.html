@@ -50,6 +50,34 @@
         </button>
         <div class="meter" aria-label="Input level"><div class="meter__fill" id="micMeter"></div></div>
         <p class="hint" id="micHint">Your browser will ask for microphone access. Audio goes only to the local server on this computer.</p>
+
+        <div class="recording" id="recording" hidden>
+          <div class="recording__head">
+            <span class="recording__title">Last recording</span>
+            <span class="recording__meta" id="recMeta"></span>
+          </div>
+          <div class="recording__buttons">
+            <button type="button" class="secondary-button" id="playOriginal" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play" d="M8 5v14l11-7z"/><g class="pause"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>
+              Original
+            </button>
+            <button type="button" class="secondary-button secondary-button--accent" id="playTuned" aria-pressed="false" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play" d="M8 5v14l11-7z"/><g class="pause"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g></svg>
+              Autotuned
+            </button>
+          </div>
+          <div class="retune">
+            <label class="field-label" for="retuneRange">Retune speed <span id="retuneValue">25 ms</span></label>
+            <input type="range" id="retuneRange" min="0" max="200" step="5" value="25">
+            <div class="retune__scale"><span>robotic</span><span>natural</span></div>
+          </div>
+          <p class="hint" id="recHint"></p>
+          <div class="recording__links">
+            <span>Download:</span>
+            <a id="downloadOriginal" download="recording.wav">original</a>
+            <a id="downloadTuned" download="recording_autotuned.wav" hidden>autotuned</a>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -76,7 +104,7 @@
         </div>
       </div>
       <div class="scale-chips" id="scaleChips"></div>
-      <p class="hint">Pitch correction isn't built yet. These settings are saved for it, and the dashboard previews the note each frame would snap to.</p>
+      <p class="hint">Microphone recordings are autotuned to these settings. The pitch view previews the note each frame snaps to.</p>
     </section>
 
     <footer class="sidebar__foot" id="serverStatus">Connecting to local server…</footer>

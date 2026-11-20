@@ -60,7 +60,8 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | YIN pitch detector (FFT-based), offline and streaming — `dsfp_tune/analysis/yin.py` | ✅ Done, tested on synthetic signals |
 | Microphone input: record, stream, list devices — `dsfp_tune/io/microphone.py` | ✅ Done |
 | Pitch plots: live window, recording/file analysis — `dsfp_tune/plotting.py` | ✅ Done |
-| Web dashboard (`python tune.py web`): file or browser mic, waveform, pitch on the scale, snap settings — `dsfp_tune/web` | ✅ Done (snap settings are saved, not applied yet) |
+| Web dashboard (`python tune.py web`): file or browser mic, waveform, pitch on the scale, snap settings — `dsfp_tune/web` | ✅ Done |
+| Dashboard: play back a microphone take original or autotuned (`POST /api/autotune`) | ✅ Done |
 | Test with real vocal recordings and tune YIN settings (threshold, range) | 🔜 Next |
 | Target note: snap to key, hysteresis, retune speed (builds on `dsfp_tune/theory`) | ⏳ Planned |
 | Pitch shifter (phase vocoder or PSOLA) with formant preservation — `dsfp_tune/synthesis` | ⏳ Planned |
@@ -163,8 +164,12 @@ In the page:
   note each frame would snap to.
 - **Where the notes land:** how much of the pitched time falls on each of the 12 notes (all octaves), laid out
   from the tonic, with scale degrees.
+- **Last recording (microphone):** when you stop the microphone, the take appears under the Start button with
+  **▶ Original** and **▶ Autotuned** buttons. The autotuned version is made by the server with `correct_pitch`,
+  using the Snapping settings below and a **Retune speed** slider (0 ms = robotic, 200 ms = natural). Changing
+  either re-processes the take. Both versions can be downloaded as WAV. Takes are kept up to 5 minutes.
 - **Snapping:** off, nearest note (chromatic), or nearest note in a key (12 tonics x 15 scales). The choice is
-  saved to `data/output/dashboard_settings.json`; the pitch-correction stage can read it with
+  saved to `data/output/dashboard_settings.json` and used for the autotuned playback; code can read it with
   `dsfp_tune.web.load_settings()`, which returns a `SnapSettings(mode, tonic, scale)` with a `.key` property.
 - Dark theme by default; the button at the top left switches to light.
 

@@ -8,6 +8,8 @@
 const $ = (id) => document.getElementById(id);
 const LIVE_WINDOW_S = 8;          // seconds of history shown while the mic is on
 const HOLD_S = 0.15;              // keep showing the last pitch this long after it drops out
+const MAX_RECORDING_S = 300;      // keep at most this much of a microphone take for playback/autotune
+const MIN_RECORDING_S = 0.3;
 
 const state = {
   theory: null,
@@ -15,6 +17,7 @@ const state = {
   source: 'file',
   file: null,      // { name, duration, sampleRate, samples, peaks, track, midi }
   live: null,      // see startMic()
+  recording: null, // last microphone take: see finishRecording()
   view: null,      // { t0, t1 } for file mode
   playing: false,
   colors: {},
@@ -138,6 +141,7 @@ function settingsChanged() {
   syncSettingsUI();
   saveSettings();
   if (state.file) state.file.hist = histogram(state.file.midi);
+  if (state.recording) scheduleAutotune();
   drawAll();
 }
 
@@ -676,6 +680,7 @@ function togglePlay() {
 // ---------------------------------------------------------------------------
 async function startMic() {
   $('player').pause();
+  stopRecordingPlayback();
   const hint = $('micHint');
   hint.classList.remove('is-error');
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -708,13 +713,14 @@ async function startMic() {
   const L = state.live = {
     running: true, ctx, stream, id: session.id, sampleRate: sr, hop: session.hop_seconds,
     frame: session.frame_seconds, ring: new Float32Array(Math.ceil(sr * (LIVE_WINDOW_S + 1))), samples: 0,
-    pending: [], pendingLen: 0, inflight: false, estimates: 0,
+    pending: [], pendingLen: 0, inflight: false, estimates: 0, chunks: [], recorded: 0,
     times: [], midi: [], f0: [], conf: [], hist: new Float64Array(12), level: 0, range: null,
   };
   const src = ctx.createMediaStreamSource(stream);
   const mute = ctx.createGain(); mute.gain.value = 0; mute.connect(ctx.destination);
   const onChunk = (chunk) => {
     if (!L.running) return;
+    if (L.recorded < MAX_RECORDING_S * sr) { L.chunks.push(chunk); L.recorded += chunk.length; }
     for (let i = 0; i < chunk.length; i++) L.ring[(L.samples + i) % L.ring.length] = chunk[i];
     L.samples += chunk.length;
     let s = 0; for (let i = 0; i < chunk.length; i++) s += chunk[i] * chunk[i];
@@ -788,7 +794,138 @@ function stopMic() {
   $('micButton').classList.remove('is-live');
   $('micButtonLabel').textContent = 'Start microphone';
   $('micMeter').style.width = '0';
+  finishRecording(L);
   requestDraw();
+}
+
+// ---------------------------------------------------------------------------
+// Last recording: play the original, or the autotuned version from the server
+// ---------------------------------------------------------------------------
+const recPlayer = new Audio();
+
+function finishRecording(L) {
+  const n = L.recorded;
+  if (n < MIN_RECORDING_S * L.sampleRate) return;   // a stray click on Start/Stop: keep the previous take
+  const samples = new Float32Array(n);
+  let o = 0;
+  for (const c of L.chunks) { samples.set(c, o); o += c.length; }
+  L.chunks = [];
+  discardRecording();
+  const R = state.recording = {
+    samples, sampleRate: L.sampleRate, duration: n / L.sampleRate,
+    originalUrl: URL.createObjectURL(wavBlob(samples, L.sampleRate)), tunedUrl: null, job: 0,
+    capped: L.recorded >= MAX_RECORDING_S * L.sampleRate,
+  };
+  $('recording').hidden = false;
+  $('recMeta').textContent = `${fmtTime(R.duration)} · ${R.sampleRate / 1000} kHz${R.capped ? ' · first 5 min' : ''}`;
+  $('downloadOriginal').href = R.originalUrl;
+  autotuneRecording();
+}
+
+function discardRecording() {
+  const R = state.recording;
+  if (!R) return;
+  stopRecordingPlayback();
+  URL.revokeObjectURL(R.originalUrl);
+  if (R.tunedUrl) URL.revokeObjectURL(R.tunedUrl);
+  state.recording = null;
+}
+
+function retuneMs() { return +$('retuneRange').value; }
+
+function setRecHint(text, kind = '') {
+  const h = $('recHint');
+  h.textContent = text;
+  h.classList.toggle('is-error', kind === 'error');
+  h.classList.toggle('is-busy', kind === 'busy');
+}
+
+let autotuneTimer = null;
+function scheduleAutotune() {
+  clearTimeout(autotuneTimer);
+  autotuneTimer = setTimeout(autotuneRecording, 300);
+}
+
+async function autotuneRecording() {
+  const R = state.recording;
+  if (!R) return;
+  const job = ++R.job;
+  if (recPlayer.dataset.which === 'tuned') stopRecordingPlayback();
+  if (R.tunedUrl) { URL.revokeObjectURL(R.tunedUrl); R.tunedUrl = null; }
+  $('playTuned').disabled = true;
+  $('downloadTuned').hidden = true;
+
+  const s = state.settings;
+  if (s.mode === 'off') {
+    setRecHint('Snapping is off. Choose "Nearest note" or "Nearest note in key" to hear the autotuned version.');
+    return;
+  }
+  setRecHint('Autotuning…', 'busy');
+  const q = new URLSearchParams({
+    sample_rate: R.sampleRate, retune_ms: retuneMs(), mode: s.mode, tonic: s.tonic, scale: s.scale,
+  });
+  try {
+    const res = await fetch(`/api/autotune?${q}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: R.samples,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `${res.status} ${res.statusText}`);
+    }
+    const summary = JSON.parse(res.headers.get('X-Autotune-Summary') || '{}');
+    const blob = await res.blob();
+    if (state.recording !== R || job !== R.job) return;   // superseded by a newer take or setting
+    R.tunedUrl = URL.createObjectURL(blob);
+    R.summary = summary;
+    $('playTuned').disabled = false;
+    $('downloadTuned').href = R.tunedUrl;
+    $('downloadTuned').hidden = false;
+    const target = summary.key || 'the nearest notes';
+    setRecHint(summary.voiced_fraction > 0
+      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms`
+      : 'No sung pitch found in this take, so the autotuned version sounds the same.');
+  } catch (err) {
+    if (state.recording !== R || job !== R.job) return;
+    setRecHint(`Couldn't autotune: ${err.message}`, 'error');
+  }
+}
+
+function playRecording(which) {
+  const R = state.recording;
+  if (!R) return;
+  if (recPlayer.dataset.which === which && !recPlayer.paused) { stopRecordingPlayback(); return; }
+  const url = which === 'tuned' ? R.tunedUrl : R.originalUrl;
+  if (!url) return;
+  $('player').pause();
+  recPlayer.src = url;
+  recPlayer.dataset.which = which;
+  recPlayer.currentTime = 0;
+  recPlayer.play().catch((err) => setRecHint(`Playback failed: ${err.message}`, 'error'));
+  syncRecordingButtons();
+}
+
+function stopRecordingPlayback() {
+  recPlayer.pause();
+  recPlayer.dataset.which = '';
+  syncRecordingButtons();
+}
+
+function syncRecordingButtons() {
+  const playing = recPlayer.paused ? '' : recPlayer.dataset.which;
+  $('playOriginal').setAttribute('aria-pressed', String(playing === 'original'));
+  $('playTuned').setAttribute('aria-pressed', String(playing === 'tuned'));
+}
+
+/** 16-bit PCM WAV, so the original take can be played and downloaded. */
+function wavBlob(samples, sampleRate) {
+  const n = samples.length, buf = new ArrayBuffer(44 + 2 * n), v = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + 2 * n, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, 2 * sampleRate, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, 2 * n, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + 2 * i, Math.round(Math.max(-1, Math.min(1, samples[i])) * 32767), true);
+  return new Blob([buf], { type: 'audio/wav' });
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +938,7 @@ function setSource(src) {
   $('transport').style.visibility = src === 'file' ? 'visible' : 'hidden';
   $('viewHint').textContent = src === 'file' && state.file ? 'scroll to zoom · drag to pan · double-click to reset · click to seek'
     : src === 'mic' ? `last ${LIVE_WINDOW_S} seconds` : '';
-  if (src === 'file') stopMic(); else $('player').pause();
+  if (src === 'file') { stopMic(); stopRecordingPlayback(); } else $('player').pause();
   requestDraw();
 }
 
@@ -833,8 +970,13 @@ async function init() {
   document.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
   $('micButton').addEventListener('click', () => (state.live && state.live.running ? stopMic() : startMic()));
   $('playButton').addEventListener('click', togglePlay);
+  $('playOriginal').addEventListener('click', () => playRecording('original'));
+  $('playTuned').addEventListener('click', () => playRecording('tuned'));
+  for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, syncRecordingButtons);
+  $('retuneRange').addEventListener('input', () => { $('retuneValue').textContent = `${retuneMs()} ms`; });
+  $('retuneRange').addEventListener('change', () => { if (state.recording) autotuneRecording(); });
   const player = $('player');
-  player.addEventListener('play', () => { state.playing = true; $('playButton').classList.add('is-playing'); });
+  player.addEventListener('play', () => { state.playing = true; $('playButton').classList.add('is-playing'); stopRecordingPlayback(); });
   player.addEventListener('pause', () => { state.playing = false; $('playButton').classList.remove('is-playing'); requestDraw(); });
   player.addEventListener('timeupdate', () => {
     // Keep the playhead on screen while zoomed in.

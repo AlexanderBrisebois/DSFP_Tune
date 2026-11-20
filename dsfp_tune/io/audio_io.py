@@ -202,13 +202,10 @@ def _load_ffmpeg(path: Path, sample_rate: int | None, mono: bool) -> AudioSignal
     return AudioSignal(data, sr, path)
 
 
-def save_wav(path: str | Path, samples: np.ndarray | AudioSignal, sample_rate: int | None = None) -> Path:
-    """Write audio to a 16-bit PCM WAV file (standard library only; readable everywhere).
+def wav_bytes(samples: np.ndarray | AudioSignal, sample_rate: int | None = None) -> bytes:
+    """Encode audio as a 16-bit PCM WAV file in memory (see :func:`save_wav`)."""
+    import io
 
-    ``samples`` is float in [-1, 1] (values outside are clipped), shape ``(n,)`` or
-    ``(n, channels)``, or an :class:`AudioSignal` (then ``sample_rate`` is taken from it).
-    Parent directories are created. Returns the path written.
-    """
     if isinstance(samples, AudioSignal):
         sample_rate = samples.sample_rate if sample_rate is None else sample_rate
         samples = samples.samples
@@ -217,12 +214,24 @@ def save_wav(path: str | Path, samples: np.ndarray | AudioSignal, sample_rate: i
     data = np.asarray(samples, dtype=np.float64)
     channels = 1 if data.ndim == 1 else data.shape[1]
     pcm = np.round(np.clip(data, -1.0, 1.0) * 32767).astype("<i2")
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as w:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
         w.setnchannels(channels)
         w.setsampwidth(2)
         w.setframerate(int(sample_rate))
         w.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def save_wav(path: str | Path, samples: np.ndarray | AudioSignal, sample_rate: int | None = None) -> Path:
+    """Write audio to a 16-bit PCM WAV file (standard library only; readable everywhere).
+
+    ``samples`` is float in [-1, 1] (values outside are clipped), shape ``(n,)`` or
+    ``(n, channels)``, or an :class:`AudioSignal` (then ``sample_rate`` is taken from it).
+    Parent directories are created. Returns the path written.
+    """
+    data = wav_bytes(samples, sample_rate)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
     return path
