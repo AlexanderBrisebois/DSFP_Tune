@@ -240,6 +240,10 @@ def _correction_settings(args: argparse.Namespace, default_fft: int) -> dict:
     key = _parse_key_arg(args.key)
     if args.harmony < 0:
         raise SystemExit("tune.py autotune: --harmony must be >= 0")
+    if not 0.0 <= args.amount <= 1.0:
+        raise SystemExit("tune.py autotune: --amount must be between 0 and 1")
+    if args.release_ms is not None and args.release_ms < 0:
+        raise SystemExit("tune.py autotune: --release-ms must be >= 0")
     if args.harmony > 0:
         if key is None:
             raise SystemExit('tune.py autotune: --harmony needs --key (e.g. --key "C major")')
@@ -249,6 +253,8 @@ def _correction_settings(args: argparse.Namespace, default_fft: int) -> dict:
         key=key,
         harmony=args.harmony,
         retune_ms=args.retune_ms,
+        release_ms=args.release_ms,
+        amount=args.amount,
         f_min=args.f_min,
         f_max=args.f_max,
         n_fft=args.fft_size or default_fft,
@@ -452,7 +458,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("path", nargs="?", help="audio file to correct (default: record from the microphone)")
     p.add_argument("--key", help='restrict to a key, e.g. "A minor", "F# major", "Bb dorian" (default: any semitone)')
     p.add_argument("--retune-ms", type=float, default=25.0,
-                   help="how fast pitch glides to the note: 0 = instant/robotic, 100+ = natural (default 25)")
+                   help="attack: how fast pitch glides to the note: 0 = instant/robotic, 100+ = natural (default 25)")
+    p.add_argument("--release-ms", type=float, default=None,
+                   help="how fast the correction lets go when a note ends or its pitch is lost (default: same as --retune-ms)")
+    p.add_argument("--amount", type=float, default=1.0,
+                   help="correction strength 0-1: 1 = all the way onto the note, 0.5 = halfway (default 1)")
     p.add_argument("--harmony", type=float, default=0.0, metavar="LEVEL",
                    help="add the key's triad on each snapped note (C major + A -> A C E): level of the third "
                    "and fifth voices relative to the lead, e.g. 0.5 (default 0 = off; needs --key)")

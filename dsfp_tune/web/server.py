@@ -11,6 +11,8 @@ POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one YinStream
 POST /api/live/<id>         raw little-endian float32 mono samples -> pitch estimates
 POST /api/live/<id>/stop    forget the session
 POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony=..
+                            [&release_ms=..&amount=..&hysteresis=..&note_window_ms=..
+                             &note_jump=..&hold_ms=..&max_correction=..]   (advanced; see ADVANCED_LIMITS)
                             raw little-endian float32 mono samples (a microphone recording)
                             -> pitch-corrected WAV (dsfp_tune.correction.correct_pitch);
                             summary JSON in the X-Autotune-Summary header
@@ -45,6 +47,16 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 LIVE_IDLE_SECONDS = 120.0
 MAX_AUTOTUNE_SECONDS = 600.0
 DEFAULT_RETUNE_MS = 25.0
+# Advanced correction settings accepted by /api/autotune: PitchCorrector argument -> allowed range.
+ADVANCED_LIMITS = {
+    "release_ms": (0.0, 2000.0),
+    "amount": (0.0, 1.0),
+    "hysteresis": (0.0, 1.0),
+    "note_window_ms": (0.0, 1000.0),
+    "note_jump": (0.1, 12.0),
+    "hold_ms": (0.0, 1000.0),
+    "max_correction": (0.1, 12.0),
+}
 
 # Pitch range: the CLI defaults (70-1000 Hz cover singing voices).
 F_MIN = 70.0
@@ -107,13 +119,15 @@ def analyze_file(path: str | Path) -> dict:
 
 
 def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettings,
-                     retune_ms: float = DEFAULT_RETUNE_MS) -> tuple[bytes, dict]:
+                     retune_ms: float = DEFAULT_RETUNE_MS, **advanced: float) -> tuple[bytes, dict]:
     """Pitch-correct a mono recording with the dashboard's snap settings.
 
     Returns ``(wav_bytes, summary)``. Mode ``chromatic`` snaps to the nearest semitone,
     ``key`` to the nearest note of ``settings.key``; ``off`` is rejected (nothing to do).
     ``settings.harmony`` > 0 adds the key's triad on each snapped note; it applies only in
-    ``key`` mode with a 7-note scale and is ignored otherwise.
+    ``key`` mode with a 7-note scale and is ignored otherwise. ``advanced`` takes the
+    :class:`~dsfp_tune.correction.PitchCorrector` settings listed in ``ADVANCED_LIMITS``
+    (release_ms, amount, hysteresis, note_window_ms, note_jump, hold_ms, max_correction).
     """
     sample_rate = int(sample_rate)
     if settings.mode == "off":
@@ -122,6 +136,12 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
         raise ValueError(f"unsupported sample rate {sample_rate}")
     if not 0.0 <= retune_ms <= 1000.0:
         raise ValueError("retune_ms must be between 0 and 1000")
+    for name, value in advanced.items():
+        if name not in ADVANCED_LIMITS:
+            raise ValueError(f"unknown setting {name!r}")
+        lo, hi = ADVANCED_LIMITS[name]
+        if not lo <= value <= hi:
+            raise ValueError(f"{name} must be between {lo:g} and {hi:g}")
     x = np.nan_to_num(np.asarray(samples, dtype=np.float64))
     if len(x) == 0:
         raise ValueError("empty recording")
@@ -131,7 +151,7 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
     key = settings.key
     harmony = settings.harmony if key is not None and len(key.intervals) == 7 else 0.0
     result = correct_pitch(x, sample_rate, key=key, retune_ms=retune_ms, harmony=harmony,
-                           f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
+                           f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4), **advanced)
     samples = result.samples
     peak = float(np.max(np.abs(samples), initial=0.0))
     if harmony and peak > 0.99:  # lead + chord voices can exceed full scale: scale down instead of clipping
@@ -142,6 +162,7 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
         "key": key.name if key is not None else None,
         "retune_ms": float(retune_ms),
         "harmony": float(harmony),
+        "advanced": {k: float(v) for k, v in advanced.items()},
         "duration": len(x) / sample_rate,
         "voiced_fraction": float(result.voiced.mean()) if len(result.voiced) else 0.0,
         "mean_shift_cents": round(float(shift.mean()), 1) if shift.size else 0.0,
@@ -292,8 +313,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         raw = self._body()
         samples = np.frombuffer(raw[: len(raw) // 4 * 4], dtype="<f4")
         started = time.monotonic()
+        advanced = {k: float(q[k]) for k in ADVANCED_LIMITS if k in q}
         wav, summary = autotune_samples(samples, int(float(q["sample_rate"])), settings,
-                                        float(q.get("retune_ms", DEFAULT_RETUNE_MS)))
+                                        float(q.get("retune_ms", DEFAULT_RETUNE_MS)), **advanced)
         summary["processing_seconds"] = round(time.monotonic() - started, 3)
         return self._send(200, wav, "audio/wav", {"X-Autotune-Summary": json.dumps(summary, separators=(",", ":"))})
 
@@ -355,4 +377,4 @@ def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True, 
         server.server_close()
 
 
-__all__ = ["analyze_file", "analyze_samples", "autotune_samples", "make_server", "serve", "theory_payload"]
+__all__ = ["ADVANCED_LIMITS", "analyze_file", "analyze_samples", "autotune_samples", "make_server", "serve", "theory_payload"]
