@@ -16,7 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import FixedFormatter, FixedLocator, FuncFormatter, NullFormatter, NullLocator
 
-from dsfp_tune.analysis import PitchTrack, YinStream, hz_to_midi, midi_to_hz, nearest_note, note_name, yin_track
+from dsfp_tune.analysis import PitchTrack, YinStream, yin_track
+from dsfp_tune.theory import freq_to_midi, midi_to_freq, midi_to_name, nearest_note
 
 __all__ = ["LivePitchPlot", "cents_from_held_note", "note_ticks", "plot_pitch", "spectrogram"]
 
@@ -51,7 +52,7 @@ def cents_from_held_note(f0: np.ndarray, frame_rate: float, smooth_seconds: floa
     between +50 and -50 whenever it crosses the midpoint between two notes. ``nan`` where
     unvoiced.
     """
-    midi = hz_to_midi(np.asarray(f0, dtype=np.float64))  # nan stays nan
+    midi = freq_to_midi(np.asarray(f0, dtype=np.float64))  # nan stays nan
     half = max(1, int(round(smooth_seconds * frame_rate / 2)))
     padded = np.pad(midi, half, constant_values=np.nan)
     windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * half + 1)
@@ -133,10 +134,10 @@ def plot_pitch(
     ax_s.plot(track.times, track.f0, color=F0_COLOR, linewidth=2.0, label="YIN f0")
     ax_s.set_yscale("log")
     ax_s.set_ylim(lo_hz, hi_hz)
-    labelled, all_notes = note_ticks(float(hz_to_midi(lo_hz)), float(hz_to_midi(hi_hz)))
-    ax_s.yaxis.set_major_locator(FixedLocator(midi_to_hz(labelled)))
-    ax_s.yaxis.set_major_formatter(FixedFormatter([note_name(n) for n in labelled]))
-    ax_s.yaxis.set_minor_locator(FixedLocator(midi_to_hz(all_notes)))
+    labelled, all_notes = note_ticks(float(freq_to_midi(lo_hz)), float(freq_to_midi(hi_hz)))
+    ax_s.yaxis.set_major_locator(FixedLocator(midi_to_freq(labelled)))
+    ax_s.yaxis.set_major_formatter(FixedFormatter([midi_to_name(n) for n in labelled]))
+    ax_s.yaxis.set_minor_locator(FixedLocator(midi_to_freq(all_notes)))
     ax_s.yaxis.set_minor_formatter(NullFormatter())
     ax_s.grid(True, axis="y", which="major", color="white", alpha=0.25, linewidth=0.6)
     ax_s.set_ylabel("note")
@@ -207,7 +208,7 @@ class LivePitchPlot:
         self.samples_seen += len(block)
         self.heard_anything = self.heard_anything or bool(np.any(block))
         for est in self.stream.push(block):
-            self._midi.append(float(hz_to_midi(est.f0)) if est.voiced else math.nan)
+            self._midi.append(float(freq_to_midi(est.f0)) if est.voiced else math.nan)
             self.latest = est
 
     def data(self) -> tuple[np.ndarray, np.ndarray]:
@@ -241,7 +242,7 @@ class LivePitchPlot:
         self._ylim = (lo, hi)
         self.ax.set_ylim(lo, hi)
         labelled, all_notes = note_ticks(lo, hi)
-        self.ax.set_yticks(labelled, [note_name(n) for n in labelled])
+        self.ax.set_yticks(labelled, [midi_to_name(n) for n in labelled])
         self.ax.set_yticks(all_notes, minor=True)
         self.ax.grid(True, axis="y", which="minor", color="0.85", linewidth=0.6)
         self.ax.grid(True, axis="y", which="major", color="0.7", linewidth=0.9)
@@ -270,7 +271,7 @@ class LivePitchPlot:
         est = self.latest
         if est is not None and est.voiced:
             name, cents = nearest_note(est.f0)
-            self.dot.set_data([0.0], [hz_to_midi(est.f0)])
+            self.dot.set_data([0.0], [freq_to_midi(est.f0)])
             colour = "#2da44e" if abs(cents) <= 10 else ("#d29922" if abs(cents) <= 25 else "#cf222e")
             self.readout.set_text(f"{name:<3} {cents:+3.0f}¢  {est.f0:6.1f} Hz")
             self.readout.set_color(colour)

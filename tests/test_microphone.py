@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from dsfp_tune.analysis import YinStream, hz_to_midi, midi_to_hz, nearest_note, note_name
+from dsfp_tune.analysis import YinStream
+from dsfp_tune.theory import nearest_note
 from dsfp_tune.io import AudioSignal, save_wav
 
 SR = 44100
@@ -161,14 +162,14 @@ def test_yin_stream_matches_frame_detector():
 # --- notes -------------------------------------------------------------------
 
 
-def test_note_helpers():
-    assert hz_to_midi(440.0) == pytest.approx(69)
-    assert midi_to_hz(60) == pytest.approx(261.6256, rel=1e-6)
-    assert note_name(69) == "A4" and note_name(60) == "C4" and note_name(61) == "C#4"
+def test_nearest_note():
     name, cents = nearest_note(445.0)
     assert name == "A4" and cents == pytest.approx(19.56, abs=0.01)
     name, cents = nearest_note(452.9)  # closer to A#4
     assert name == "A#4" and cents < 0
+    assert nearest_note(452.9, flats=True)[0] == "Bb4"
+    with pytest.raises(ValueError):
+        nearest_note(0.0)
 
 
 # --- WAV ---------------------------------------------------------------------
@@ -191,14 +192,14 @@ def test_save_wav_needs_rate(tmp_path):
         save_wav(tmp_path / "a.wav", np.zeros(10))
 
 
-# --- CLI -------------------------------------------------------------------------
+# --- CLI (tune.py) -------------------------------------------------------------------------
 
 
 def test_record_cli_saves_and_summarizes(fake_sd, tmp_path, capsys):
-    from dsfp_tune.cli import record_main
+    from tune import main
 
     out = tmp_path / "take.wav"
-    record_main(["--seconds", "0.5", "--out", str(out), "--no-plot"])
+    main(["record", "--seconds", "0.5", "--out", str(out), "--no-plot"])
     text = capsys.readouterr().out
     assert out.exists()
     assert "A3" in text and "voiced" in text
@@ -208,33 +209,33 @@ def test_record_cli_saves_and_summarizes(fake_sd, tmp_path, capsys):
 def test_record_cli_plots_by_default(fake_sd, tmp_path, capsys, monkeypatch):
     import matplotlib.pyplot as plt
 
-    from dsfp_tune.cli import record_main
+    from tune import main
 
     shown = []
     monkeypatch.setattr(plt, "show", lambda *a, **k: shown.append(plt.gcf()))
-    record_main(["--seconds", "0.5", "--out", str(tmp_path / "t.wav")])
+    main(["record", "--seconds", "0.5", "--out", str(tmp_path / "t.wav")])
     assert len(shown) == 1 and len(shown[0].axes) >= 3
     assert "showing plot" in capsys.readouterr().out
 
 
 def test_record_cli_warns_on_silence(fake_sd, tmp_path, capsys):
-    from dsfp_tune.cli import record_main
+    from tune import main
 
     fake_sd.recorded = np.zeros(SR, np.float32)
-    record_main(["--seconds", "0.5", "--no-save"])
+    main(["record", "--seconds", "0.5", "--no-save"])
     assert "Microphone" in capsys.readouterr().err
 
 
 def test_list_devices_cli(fake_sd, capsys):
-    from dsfp_tune.cli import record_main
+    from tune import main
 
-    record_main(["--list-devices"])
+    main(["devices"])
     text = capsys.readouterr().out
     assert "Built-in Mic" in text and "USB Interface" in text and "Speakers" not in text
 
 
 def test_cents_bar():
-    from dsfp_tune.cli import _cents_bar
+    from tune import _cents_bar
 
     assert _cents_bar(0) == "[----------*----------]"
     assert _cents_bar(-50) == "[*---------|----------]"

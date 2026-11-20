@@ -1,7 +1,7 @@
-# Convenience for `pip install -r requirements.txt`; pyproject.toml is the source of truth.
 numpy>=1.24
-scipy>=1.10
-soundfile>=0.12
-sounddevice>=0.4
-matplotlib>=3.7
-pytest>=7
+# optional
+scipy>=1.10        # extra DSP helpers
+soundfile>=0.12    # MP3 decoding without ffmpeg
+matplotlib>=3.7    # --plot, pitch plots
+sounddevice>=0.4   # microphone input (record / live)
+pytest>=7          # tests

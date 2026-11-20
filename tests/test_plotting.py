@@ -143,10 +143,10 @@ def test_load_24bit_stereo_wav(tmp_path):
 
 
 def test_pitch_cli_saves_figure(tmp_path, capsys):
-    from dsfp_tune.cli import pitch_main
+    from tune import main
 
     wav = save_wav(tmp_path / "take.wav", sine(196.0, 0.5), SR)
     png = tmp_path / "take.png"
-    pitch_main([str(wav), "--save", str(png), "--no-show"])
+    main(["pitch", str(wav), "--save", str(png), "--no-show"])
     assert png.exists() and png.stat().st_size > 10_000
     assert "G3" in capsys.readouterr().out

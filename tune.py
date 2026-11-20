@@ -1,4 +1,13 @@
-"""Command-line helpers."""
+#!/usr/bin/env python3
+"""DSFP_Tune command-line tool.
+
+    python tune.py inspect data/audio/song.mp3 --plot
+    python tune.py inspect song.mp3 --sr 22050 --save data/output/song.npz
+    python tune.py live                          # live pitch window from the microphone
+    python tune.py record --seconds 10           # record, save WAV, plot pitch
+    python tune.py pitch data/audio/take.wav     # plot pitch of a file
+    python tune.py devices                       # list microphones
+"""
 
 from __future__ import annotations
 
@@ -10,20 +19,10 @@ from pathlib import Path
 
 import numpy as np
 
-from dsfp_tune.analysis import YinStream, nearest_note, yin_track
-from dsfp_tune.io import load_audio, save_wav
+from dsfp_tune.io import load_audio
 
 
-def inspect_main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Load an audio file and print/plot time vs. amplitude.")
-    p.add_argument("path")
-    p.add_argument("--sr", type=int, default=None, help="resample to this rate")
-    p.add_argument("--stereo", action="store_true", help="keep all channels")
-    p.add_argument("--backend", default="auto", choices=["auto", "ffmpeg", "soundfile"])
-    p.add_argument("--plot", action="store_true", help="plot waveform (needs matplotlib)")
-    p.add_argument("--save", help="save time/amplitude arrays to this .npz file")
-    args = p.parse_args(argv)
-
+def cmd_inspect(args: argparse.Namespace) -> None:
     sig = load_audio(args.path, sample_rate=args.sr, mono=not args.stereo, backend=args.backend)
     print(sig)
     print(f"peak={np.abs(sig.samples).max():.4f}  rms={np.sqrt(np.mean(sig.samples**2)):.4f}")
@@ -46,7 +45,7 @@ def inspect_main(argv: list[str] | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Microphone: record / live pitch
+# Pitch: microphone (record / live) and files
 # ---------------------------------------------------------------------------
 
 MIC_PERMISSION_HINT = (
@@ -63,6 +62,8 @@ def _device_arg(value: str | None) -> int | str | None:
 
 
 def _describe(f0: float) -> str:
+    from dsfp_tune.theory import nearest_note
+
     name, cents = nearest_note(f0)
     return f"{f0:7.1f} Hz  {name:<4}{cents:+4.0f} cents"
 
@@ -78,6 +79,9 @@ def _cents_bar(cents: float, half_width: int = 10) -> str:
 
 
 def _summarize_pitch(samples: np.ndarray, sr: int, f_min: float, f_max: float) -> None:
+    from dsfp_tune.analysis import yin_track
+    from dsfp_tune.theory import nearest_note
+
     track = yin_track(samples, sr, hop_length=256, f_min=f_min, f_max=f_max)
     v = track.voiced
     print(f"pitch: {100 * v.mean():.0f}% of frames voiced", end="")
@@ -90,7 +94,27 @@ def _summarize_pitch(samples: np.ndarray, sr: int, f_min: float, f_max: float) -
         print(" (no pitch found)")
 
 
-def _record(args) -> None:
+def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Plotting needs matplotlib: pip install matplotlib (or pass --no-plot)", file=sys.stderr)
+        return
+
+    from dsfp_tune.plotting import plot_pitch
+
+    fig = plot_pitch(samples, sr, title=title, f_min=f_min, f_max=f_max)
+    if save:
+        fig.savefig(save, dpi=150)
+        print(f"saved plot {save}")
+    if show:
+        print("showing plot (close the window to continue)")
+        plt.show()
+    plt.close(fig)
+
+
+def cmd_record(args: argparse.Namespace) -> None:
+    from dsfp_tune.io import save_wav
     from dsfp_tune.io.microphone import record
 
     print(f"Recording {args.seconds:g} s at {args.sr} Hz ... sing or speak now")
@@ -120,26 +144,7 @@ def _record(args) -> None:
                          title=str(out) if out else "microphone recording")
 
 
-def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print("Plotting needs matplotlib: pip install matplotlib (or pass --no-plot)", file=sys.stderr)
-        return
-
-    from dsfp_tune.plotting import plot_pitch
-
-    fig = plot_pitch(samples, sr, title=title, f_min=f_min, f_max=f_max)
-    if save:
-        fig.savefig(save, dpi=150)
-        print(f"saved plot {save}")
-    if show:
-        print("showing plot (close the window to continue)")
-        plt.show()
-    plt.close(fig)
-
-
-def _live(args) -> None:
+def cmd_live(args: argparse.Namespace) -> None:
     if not args.no_plot:
         from dsfp_tune.plotting import LivePitchPlot
 
@@ -150,7 +155,10 @@ def _live(args) -> None:
             print(MIC_PERMISSION_HINT, file=sys.stderr)
         return
 
+    # Text tuner in the terminal.
+    from dsfp_tune.analysis import YinStream
     from dsfp_tune.io.microphone import MicrophoneStream
+    from dsfp_tune.theory import nearest_note
 
     hop = 256
     stream = YinStream(args.sr, hop_length=hop, f_min=args.f_min, f_max=args.f_max)
@@ -188,46 +196,7 @@ def _live(args) -> None:
         print(f"note: {mic.overflows} audio blocks were dropped (processing fell behind)")
 
 
-def record_main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(
-        description="Record from the microphone (saves a WAV, prints a pitch summary and plots it), "
-        "or show the detected pitch live with --live."
-    )
-    p.add_argument("--seconds", type=float, default=5.0, help="recording length (default 5)")
-    p.add_argument("--out", help="output WAV path (default data/audio/mic_<timestamp>.wav)")
-    p.add_argument("--no-save", action="store_true", help="don't write a WAV file")
-    p.add_argument("--sr", type=int, default=44100, help="sample rate (default 44100)")
-    p.add_argument("--device", help="input device index or part of its name (default: system default)")
-    p.add_argument("--list-devices", action="store_true", help="list input devices and exit")
-    p.add_argument("--live", action="store_true", help="show pitch live in a window (close it to stop)")
-    p.add_argument("--no-plot", action="store_true",
-                   help="no plot window (with --live: text tuner in the terminal, Ctrl+C to stop)")
-    p.add_argument("--f-min", type=float, default=70.0, help="lowest pitch to detect, Hz (default 70)")
-    p.add_argument("--f-max", type=float, default=1000.0, help="highest pitch to detect, Hz (default 1000)")
-    args = p.parse_args(argv)
-
-    if args.list_devices:
-        from dsfp_tune.io.microphone import list_input_devices
-
-        for d in list_input_devices():
-            star = "*" if d["is_default"] else " "
-            print(f"{star} {d['index']:>2}  {d['name']}  ({d['channels']} ch, {d['default_samplerate']:.0f} Hz)")
-        return
-    if args.live:
-        _live(args)
-    else:
-        _record(args)
-
-
-def pitch_main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Detect pitch in an audio file and plot it.")
-    p.add_argument("path")
-    p.add_argument("--f-min", type=float, default=70.0, help="lowest pitch to detect, Hz (default 70)")
-    p.add_argument("--f-max", type=float, default=1000.0, help="highest pitch to detect, Hz (default 1000)")
-    p.add_argument("--save", help="also save the figure (e.g. plot.png)")
-    p.add_argument("--no-show", action="store_true", help="don't open a window (use with --save)")
-    args = p.parse_args(argv)
-
+def cmd_pitch(args: argparse.Namespace) -> None:
     sig = load_audio(args.path)
     print(sig)
     _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max)
@@ -235,5 +204,69 @@ def pitch_main(argv: list[str] | None = None) -> None:
                      save=args.save, show=not args.no_show)
 
 
+def cmd_devices(args: argparse.Namespace) -> None:
+    from dsfp_tune.io.microphone import list_input_devices
+
+    for d in list_input_devices():
+        star = "*" if d["is_default"] else " "
+        print(f"{star} {d['index']:>2}  {d['name']}  ({d['channels']} ch, {d['default_samplerate']:.0f} Hz)")
+
+
+def _add_pitch_range(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--f-min", type=float, default=70.0, help="lowest pitch to detect, Hz (default 70)")
+    p.add_argument("--f-max", type=float, default=1000.0, help="highest pitch to detect, Hz (default 1000)")
+
+
+def _add_mic(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--sr", type=int, default=44100, help="sample rate (default 44100)")
+    p.add_argument("--device", help="input device index or part of its name (see `tune.py devices`)")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tune.py", description="Autotune using Fourier transforms.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("inspect", help="load an audio file and show time vs. amplitude")
+    p.add_argument("path")
+    p.add_argument("--sr", type=int, default=None, help="resample to this rate")
+    p.add_argument("--stereo", action="store_true", help="keep all channels")
+    p.add_argument("--backend", default="auto", choices=["auto", "ffmpeg", "soundfile"])
+    p.add_argument("--plot", action="store_true", help="plot the waveform (needs matplotlib)")
+    p.add_argument("--save", help="save time/amplitude arrays to this .npz file")
+    p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser("live", help="show the detected pitch from the microphone live")
+    _add_mic(p)
+    _add_pitch_range(p)
+    p.add_argument("--no-plot", action="store_true", help="text tuner in the terminal instead of a window")
+    p.set_defaults(func=cmd_live)
+
+    p = sub.add_parser("record", help="record from the microphone, save a WAV, and plot its pitch")
+    _add_mic(p)
+    _add_pitch_range(p)
+    p.add_argument("--seconds", type=float, default=5.0, help="recording length (default 5)")
+    p.add_argument("--out", help="output WAV path (default data/audio/mic_<timestamp>.wav)")
+    p.add_argument("--no-save", action="store_true", help="don't write a WAV file")
+    p.add_argument("--no-plot", action="store_true", help="don't open a plot window")
+    p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("pitch", help="detect pitch in an audio file and plot it")
+    p.add_argument("path")
+    _add_pitch_range(p)
+    p.add_argument("--save", help="also save the figure (e.g. plot.png)")
+    p.add_argument("--no-show", action="store_true", help="don't open a window (use with --save)")
+    p.set_defaults(func=cmd_pitch)
+
+    p = sub.add_parser("devices", help="list microphones / audio inputs")
+    p.set_defaults(func=cmd_devices)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    args.func(args)
+
+
 if __name__ == "__main__":
-    inspect_main()
+    main()
