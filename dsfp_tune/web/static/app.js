@@ -233,7 +233,14 @@ function niceStep(span, px, minPx = 70) {
 /** Current time window and data for whichever source is showing. */
 function currentView() {
   if (state.source === 'mic' && state.live) {
-    const t1 = Math.max(LIVE_WINDOW_S, state.live.samples / state.live.sampleRate);
+    const L = state.live;
+    let t1 = Math.max(LIVE_WINDOW_S, L.samples / L.sampleRate);
+    const pt = takePlayhead();
+    if (pt !== null) {
+      // Follow the playhead, three quarters of the way across.
+      L.viewT1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
+    }
+    if (!L.running && L.viewT1) t1 = L.viewT1;
     return { t0: t1 - LIVE_WINDOW_S, t1, live: true };
   }
   if (state.source === 'file' && state.file) return { ...state.view, live: false };
@@ -272,17 +279,23 @@ function drawWave() {
   ctx.globalAlpha = 0.85;
   const span = view.t1 - view.t0;
   if (view.live) {
-    const L = state.live, sr = L.sampleRate, ring = L.ring;
-    const endSample = L.samples, startSample = endSample - LIVE_WINDOW_S * sr;
+    const L = state.live, sr = L.sampleRate, ring = L.ring, R = state.recording;
+    const take = !L.running && R && R.sampleRate === sr ? R.samples : null;
+    const startSample = view.t0 * sr, endSample = Math.min(L.samples, Math.round(view.t1 * sr));
     for (let x = 0; x < w; x++) {
       const a = Math.floor(startSample + (x / w) * LIVE_WINDOW_S * sr);
-      const b = Math.floor(startSample + ((x + 1) / w) * LIVE_WINDOW_S * sr);
+      const b = Math.min(endSample, Math.floor(startSample + ((x + 1) / w) * LIVE_WINDOW_S * sr));
       let lo = 0, hi = 0;
-      for (let i = Math.max(a, endSample - ring.length, 0); i < b; i++) {
-        const v = ring[i % ring.length]; if (v < lo) lo = v; if (v > hi) hi = v;
+      if (take) {
+        for (let i = Math.max(a, 0); i < Math.min(b, take.length); i++) { const v = take[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      } else {
+        for (let i = Math.max(a, L.samples - ring.length, 0); i < b; i++) {
+          const v = ring[i % ring.length]; if (v < lo) lo = v; if (v > hi) hi = v;
+        }
       }
       if (hi > lo) ctx.fillRect(x, mid - hi * amp, 1, Math.max(1, (hi - lo) * amp));
     }
+    drawPlayhead(ctx, w, h, view);
   } else {
     const F = state.file, sr = F.sampleRate, x0 = F.samples;
     for (let x = 0; x < w; x++) {
@@ -304,9 +317,16 @@ function drawWave() {
   ctx.globalAlpha = 1;
 }
 
+/** Where the recorded take is playing (seconds), or null when it isn't. */
+function takePlayhead() {
+  const L = state.live;
+  if (!L || L.running || !state.recording || !recPlayer.dataset.which) return null;
+  return recPlayer.currentTime;
+}
+
 function drawPlayhead(ctx, w, h, view, x0 = 0) {
-  const t = $('player').currentTime;
-  if (t < view.t0 || t > view.t1) return;
+  const t = view.live ? takePlayhead() : $('player').currentTime;
+  if (t === null || t < view.t0 || t > view.t1) return;
   const x = x0 + ((t - view.t0) / (view.t1 - view.t0)) * (w - x0);
   ctx.globalAlpha = 1;
   ctx.fillStyle = state.colors.text;
@@ -354,6 +374,7 @@ function drawRoll() {
   const view = currentView();
   const plotH = h - AXIS_H, plotW = w - GUTTER;
   const { lo, hi } = view ? rollRange(view) : { lo: 48, hi: 72 };
+  state.rollRange = { lo, hi };   // the spectrogram uses the same note range
   const y = (m) => plotH - ((m - lo) / (hi - lo)) * plotH;
   const pcs = keySet(), tonic = state.settings.tonic;
   const laneH = plotH / (hi - lo);
@@ -395,14 +416,14 @@ function drawRoll() {
     const x = X(t);
     ctx.fillStyle = c.grid; ctx.fillRect(Math.round(x), 0, 1, plotH);
     ctx.fillStyle = c.muted;
-    ctx.fillText(view.live ? `${(t - view.t1).toFixed(step < 1 ? 1 : 0)} s` : axisTime(t, step), x, h - 5);
+    ctx.fillText(view.live && state.live.running ? `${(t - view.t1).toFixed(step < 1 ? 1 : 0)} s` : axisTime(t, step), x, h - 5);
   }
 
   // Pitch and snap target.
   const fr = rollFrames(view);
   ctx.save();
   ctx.beginPath(); ctx.rect(GUTTER + 1, 0, plotW, plotH); ctx.clip();
-  const first = view.live ? 0 : Math.max(0, Math.floor((view.t0 - state.file.track.t0) / state.file.track.hop_seconds) - 1);
+  const first = view.live ? Math.max(0, lowerBound(state.live.times, view.t0) - 1) : Math.max(0, Math.floor((view.t0 - state.file.track.t0) / state.file.track.hop_seconds) - 1);
   const stride = view.live ? 1 : Math.max(1, Math.floor(span / state.file.track.hop_seconds / (plotW * 2)));
   const mode = state.settings.mode;
 
@@ -443,7 +464,7 @@ function drawRoll() {
   }
   ctx.restore();
 
-  if (!view.live) drawPlayhead(ctx, w, plotH, view, GUTTER);
+  drawPlayhead(ctx, w, plotH, view, GUTTER);
 
   // Hover read-out.
   if (rollHover && !view.live) {
@@ -532,9 +553,23 @@ function drawKeys() {
 // ---------------------------------------------------------------------------
 // Read-out (current note, cents needle, snap target)
 // ---------------------------------------------------------------------------
+function lowerBound(arr, x) {   // first index with arr[i] >= x
+  let a = 0, b = arr.length;
+  while (a < b) { const m = (a + b) >> 1; if (arr[m] < x) a = m + 1; else b = m; }
+  return a;
+}
+
 function currentPitch() {
   if (state.source === 'mic' && state.live) {
-    const L = state.live, now = L.samples / L.sampleRate;
+    const L = state.live, pt = takePlayhead();
+    if (pt !== null) {   // playing the take back: the pitch at the playhead
+      const i = lowerBound(L.times, pt);
+      for (let j = Math.min(i, L.times.length - 1); j >= 0 && L.times[j] > pt - HOLD_S; j--) {
+        if (L.midi[j] !== null) return { midi: L.midi[j], f0: L.f0[j] };
+      }
+      return null;
+    }
+    const now = L.samples / L.sampleRate;
     for (let i = L.midi.length - 1; i >= 0 && L.times[i] > now - HOLD_S - 0.1; i--) {
       if (L.midi[i] !== null) return { midi: L.midi[i], f0: L.f0[i] };
     }
@@ -577,7 +612,7 @@ function drawReadout() {
 }
 
 function drawAll() {
-  drawWave(); drawRoll(); drawKeys(); drawReadout();
+  drawWave(); drawRoll(); drawSpec(); drawKeys(); drawReadout();
   const F = state.file;
   $('timeLabel').textContent = `${fmtTime($('player').currentTime)} / ${fmtTime(F ? F.duration : 0)}`;
 }
@@ -590,7 +625,7 @@ function requestDraw() {
 }
 
 function loop() {
-  if (state.playing || (state.source === 'mic' && state.live && state.live.running)) drawAll();
+  if (state.playing || !recPlayer.paused || (state.source === 'mic' && state.live && state.live.running)) drawAll();
   requestAnimationFrame(loop);
 }
 
@@ -630,6 +665,7 @@ async function loadFile(file) {
       peaks: buildPeaks(samples), track, midi, hist: histogram(midi), range: fileRange(midi),
     };
     state.view = { t0: 0, t1: audio.duration };
+    specForFile(state.file);
     $('fileMeta').textContent = `${fmtTime(audio.duration)} · ${track.sample_rate / 1000} kHz · `
       + `${Math.round(track.voiced_fraction * 100)}% pitched · analysed in ${track.analysis_seconds.toFixed(1)} s`;
     $('playButton').disabled = false;
@@ -817,7 +853,7 @@ async function pump() {
       if (m !== null) L.hist[mod12(Math.round(m))] += 1;
     }
     // Keep only what's on screen (plus a little).
-    const cut = L.times.findIndex((t) => t > L.samples / L.sampleRate - LIVE_WINDOW_S - 1);
+    const cut = L.times.findIndex((t) => t > L.samples / L.sampleRate - MAX_RECORDING_S - LIVE_WINDOW_S);
     if (cut > 2000) for (const a of [L.times, L.midi, L.f0, L.conf]) a.splice(0, cut);
   } catch (err) {
     $('micHint').textContent = err.message; $('micHint').classList.add('is-error');
@@ -865,6 +901,7 @@ function finishRecording(L) {
   $('recording').hidden = false;
   $('recMeta').textContent = `${fmtTime(R.duration)} · ${R.sampleRate / 1000} kHz${R.capped ? ' · first 5 min' : ''}`;
   $('downloadOriginal').href = R.originalUrl;
+  specForRecording(R);
   autotuneRecording();
 }
 
@@ -924,6 +961,7 @@ async function autotuneRecording() {
     const blob = await res.blob();
     if (state.recording !== R || job !== R.job) return;   // superseded by a newer take or setting
     R.tunedUrl = URL.createObjectURL(blob);
+    specForTuned(R, blob);
     R.summary = summary;
     $('playTuned').disabled = false;
     $('downloadTuned').href = R.tunedUrl;
@@ -1097,7 +1135,7 @@ async function init() {
   $('playButton').addEventListener('click', togglePlay);
   $('playOriginal').addEventListener('click', () => playRecording('original'));
   $('playTuned').addEventListener('click', () => playRecording('tuned'));
-  for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, syncRecordingButtons);
+  for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, () => { syncRecordingButtons(); requestDraw(); });
   // The recording panel's retune slider is the same setting as Advanced > Attack.
   $('retuneRange').addEventListener('input', (e) => setAdvanced('retune_ms', +e.target.value, false));
   $('retuneRange').addEventListener('change', (e) => setAdvanced('retune_ms', +e.target.value, true));
@@ -1118,6 +1156,8 @@ async function init() {
   });
   attachViewControls($('waveCanvas'), 0);
   attachViewControls($('rollCanvas'), GUTTER);
+  attachViewControls($('specCanvas'), GUTTER);
+  initSpec();
   new ResizeObserver(requestDraw).observe(document.querySelector('.main'));
 
   try {
