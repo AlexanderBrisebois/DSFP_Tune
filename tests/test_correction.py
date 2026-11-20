@@ -311,3 +311,52 @@ def test_autotune_live_refuses_speakers(fake_sd):
 
     with pytest.raises(SystemExit, match="headphones"):
         main(["autotune", "--live"])
+
+
+# --- amount / release / validation (advanced settings) --------------------------------------------
+
+
+@pytest.mark.parametrize("amount, expected_cents", [(1.0, 0), (0.75, 10), (0.5, 20), (0.0, 40)])
+def test_amount_scales_the_correction(amount, expected_cents):
+    y = correct_pitch(held(57, cents=40), SR, amount=amount).samples
+    assert 100 * (np.median(out_midi(y)) - 57) == pytest.approx(expected_cents, abs=1.5)
+
+
+def test_release_controls_how_fast_correction_lets_go():
+    x = np.concatenate([held(57, cents=40, seconds=1.0), np.zeros(int(0.6 * SR))])
+
+    def let_go_ms(**kw):
+        pc = PitchCorrector(SR, retune_ms=25, keep_history=True, **kw)
+        pc.process(x)
+        t = np.array([h.time for h in pc.history])
+        c = np.abs([h.correction for h in pc.history]) * 100
+        after = t > 1.0
+        return 1000 * (t[after][np.argmax(c[after] < 20)] - 1.0)
+
+    fast, default, slow = let_go_ms(release_ms=0), let_go_ms(), let_go_ms(release_ms=200)
+    assert fast < default < slow
+    assert slow > 150 and fast < 80
+    assert let_go_ms(release_ms=25) == pytest.approx(default)  # default release = retune_ms
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [dict(amount=1.5), dict(amount=-0.1), dict(release_ms=-1), dict(hold_ms=-1), dict(note_window_ms=-5),
+     dict(hysteresis=-0.1), dict(note_jump=0), dict(max_correction=0)],
+)
+def test_corrector_rejects_bad_settings(kwargs):
+    with pytest.raises(ValueError):
+        PitchCorrector(SR, **kwargs)
+
+
+def test_autotune_cli_amount_and_release(tmp_path, fake_sd):
+    from tune import main
+
+    wav = save_wav(tmp_path / "take.wav", held(57, cents=40, seconds=1.0), SR)
+    out = tmp_path / "half.wav"
+    main(["autotune", str(wav), "--amount", "0.5", "--release-ms", "100", "--out", str(out), "--no-plot", "--no-play"])
+    from dsfp_tune.io import load_audio
+
+    assert 100 * (np.median(out_midi(load_audio(out).samples.astype(np.float64))) - 57) == pytest.approx(20, abs=2)
+    with pytest.raises(SystemExit, match="amount"):
+        main(["autotune", str(wav), "--amount", "2", "--no-plot", "--no-play"])

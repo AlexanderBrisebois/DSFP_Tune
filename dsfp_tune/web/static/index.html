@@ -83,9 +83,15 @@
 
     <section class="card">
       <div class="card__head">
-        <h2>Snapping</h2>
+        <h2>Correction</h2>
         <span class="save-state" id="saveState"></span>
       </div>
+      <div class="segmented" role="tablist" id="settingsTabs">
+        <button type="button" role="tab" data-tab="snap" aria-selected="true">Snapping</button>
+        <button type="button" role="tab" data-tab="advanced" aria-selected="false">Advanced</button>
+      </div>
+
+      <div class="settings-pane" data-pane="snap">
       <label class="field-label">Snap to</label>
       <div class="segmented segmented--stack" id="snapModes">
         <button type="button" data-mode="off">Off</button>
@@ -112,6 +118,13 @@
         <p class="hint" id="harmonyHint"></p>
       </div>
       <p class="hint">Microphone recordings are autotuned to these settings. The pitch view previews the note each frame snaps to.</p>
+      </div>
+
+      <div class="settings-pane" data-pane="advanced" hidden>
+        <p class="hint">How the autotune behaves on microphone recordings. Changes re-process the last take.</p>
+        <div class="advanced-fields" id="advancedFields"></div>
+        <button type="button" class="secondary-button" id="advancedReset">Reset to defaults</button>
+      </div>
     </section>
 
     <footer class="sidebar__foot" id="serverStatus">Connecting to local server…</footer>

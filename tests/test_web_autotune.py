@@ -128,3 +128,36 @@ def test_page_has_recording_controls(server):
         assert el in html
     js = urllib.request.urlopen(base + "/app.js").read().decode()
     assert "/api/autotune" in js and "function finishRecording" in js
+
+
+def test_autotune_endpoint_advanced_settings(server):
+    base, _ = server
+    x = sung(57, 40).astype("<f4").tobytes()
+    body, headers = post(f"{base}/api/autotune?sample_rate={SR}&mode=chromatic&amount=0.5&release_ms=100"
+                         "&hysteresis=0.2&note_window_ms=80&note_jump=1&hold_ms=40&max_correction=3", x)
+    summary = json.loads(headers["X-Autotune-Summary"])
+    assert summary["advanced"] == {"release_ms": 100, "amount": 0.5, "hysteresis": 0.2, "note_window_ms": 80,
+                                   "note_jump": 1, "hold_ms": 40, "max_correction": 3}
+    assert 100 * (median_midi(*decode_wav(body)) - 57) == pytest.approx(20, abs=2)  # halfway
+
+
+@pytest.mark.parametrize("param", ["amount=1.5", "release_ms=-1", "note_jump=0", "max_correction=50", "amount=abc"])
+def test_autotune_endpoint_rejects_bad_advanced(server, param):
+    base, _ = server
+    with pytest.raises(urllib.error.HTTPError) as e:
+        post(f"{base}/api/autotune?sample_rate={SR}&mode=chromatic&{param}", sung(57, 10, 0.3).astype("<f4").tobytes())
+    assert e.value.code == 400
+
+
+def test_autotune_samples_rejects_unknown_setting():
+    with pytest.raises(ValueError, match="unknown setting"):
+        autotune_samples(sung(57, 10, 0.3), SR, SnapSettings(), threshold=0.2)
+
+
+def test_page_has_advanced_tab(server):
+    base, _ = server
+    html = urllib.request.urlopen(base + "/").read().decode()
+    assert 'id="settingsTabs"' in html and 'data-pane="advanced"' in html and 'id="advancedReset"' in html
+    js = urllib.request.urlopen(base + "/app.js").read().decode()
+    for knob in ("retune_ms", "release_ms", "amount", "hysteresis", "note_window_ms", "note_jump", "hold_ms", "max_correction"):
+        assert f"id: '{knob}'" in js

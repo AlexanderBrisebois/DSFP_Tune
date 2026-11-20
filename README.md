@@ -62,6 +62,7 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | Pitch plots: live window, recording/file analysis — `dsfp_tune/plotting.py` | ✅ Done |
 | Web dashboard (`python tune.py web`): file or browser mic, waveform, pitch on the scale, snap settings — `dsfp_tune/web` | ✅ Done |
 | Dashboard: play back a microphone take original or autotuned (`POST /api/autotune`) | ✅ Done |
+| Correction knobs: attack, release, amount, note stickiness/window/jump, hold, max correction (CLI + dashboard Advanced tab) | ✅ Done |
 | Test with real vocal recordings and tune YIN settings (threshold, range) | 🔜 Next |
 | Target note: snap to key, hysteresis, retune speed (builds on `dsfp_tune/theory`) | ⏳ Planned |
 | Pitch shifter (phase vocoder or PSOLA) with formant preservation — `dsfp_tune/synthesis` | ⏳ Planned |
@@ -136,6 +137,7 @@ python tune.py autotune                                    # record 5 s, correct
 python tune.py autotune data/audio/take.wav                # correct a file → data/output/take_tuned.wav
 python tune.py autotune --key "A minor" --retune-ms 0      # only A-minor notes, instant (robotic) correction
 python tune.py autotune --retune-ms 150                    # gentle correction that keeps vibrato
+python tune.py autotune --amount 0.5 --release-ms 200      # pull notes halfway; let go slowly when notes end
 python tune.py autotune --live                             # real time: mic → corrected voice → headphones (Ctrl+C)
 ```
 
@@ -171,6 +173,20 @@ In the page:
 - **Snapping:** off, nearest note (chromatic), or nearest note in a key (12 tonics x 15 scales). The choice is
   saved to `data/output/dashboard_settings.json` and used for the autotuned playback; code can read it with
   `dsfp_tune.web.load_settings()`, which returns a `SnapSettings(mode, tonic, scale)` with a `.key` property.
+- **Advanced** (second tab of the Correction card): sliders for how the autotune behaves. Each sets a
+  `PitchCorrector` argument, and changing one re-processes the last take. **Reset to defaults** restores them all.
+  Values are kept in this browser (localStorage).
+
+  | Knob | Argument | Default | What it does |
+  |---|---|---|---|
+  | Attack (retune speed) | `retune_ms` | 25 ms | How fast the voice is pulled onto the note (same as the recording panel's slider) |
+  | Release | `release_ms` | 25 ms | How fast the correction lets go when a note ends or its pitch is lost |
+  | Correction amount | `amount` | 100% | How far notes are pulled: 50% goes halfway |
+  | Note stickiness | `hysteresis` | 15¢ | How far past the midpoint between notes before the target switches |
+  | Note decision window | `note_window_ms` | 120 ms | Median window for choosing the note (vibrato doesn't flip notes) |
+  | Instant note change | `note_jump` | 75¢ | A bigger jump switches notes immediately |
+  | Hold through dropouts | `hold_ms` | 60 ms | Keeps correcting through short pitch-detection gaps |
+  | Maximum correction | `max_correction` | 200¢ | Never shifts further (leaves detection errors alone) |
 - Dark theme by default; the button at the top left switches to light.
 
 The pitch plots:

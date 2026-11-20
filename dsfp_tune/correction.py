@@ -14,9 +14,10 @@ Chord harmony (``harmony > 0``, needs a 7-note key): the snapped note is the roo
 built from the key (C major + A -> A minor: A, C, E). The third and fifth are two more shifted
 copies of the input, tuned to those notes and mixed under the lead at level ``harmony``.
 
-Retune speed: the applied correction (in semitones) moves toward the target correction with
-time constant ``retune_ms``. 0 ms snaps instantly (robotic, vibrato removed); 50-200 ms
-glides naturally and keeps vibrato.
+Retune speed (attack): the applied correction (in semitones) moves toward the target correction
+with time constant ``retune_ms``. 0 ms snaps instantly (robotic, vibrato removed); 50-200 ms
+glides naturally and keeps vibrato. ``release_ms`` is the time constant for letting go when a
+note ends or its pitch is lost, and ``amount`` (0-1) scales how far notes are pulled.
 """
 
 from __future__ import annotations
@@ -105,7 +106,14 @@ class PitchCorrector:
     key:
         ``None`` (any semitone), a ``Key``, or a string like ``"C major"`` / ``"F# minor"``.
     retune_ms:
-        Glide time constant toward the target. 0 = instant (hard autotune).
+        Attack: glide time constant toward the target note. 0 = instant (hard autotune).
+    release_ms:
+        Release: time constant for letting go of the correction (back to the sung pitch) when
+        a note ends, its pitch is lost, or a correction is rejected. ``None`` = same as
+        ``retune_ms``.
+    amount:
+        Correction strength, 0-1. 1 pulls notes all the way onto the target; 0.5 halfway
+        (keeps some of the original intonation); 0 leaves the pitch alone.
     hysteresis:
         See :class:`NoteSnapper`.
     hold_ms:
@@ -142,6 +150,8 @@ class PitchCorrector:
         sample_rate: int,
         key: Key | str | None = None,
         retune_ms: float = 25.0,
+        release_ms: float | None = None,
+        amount: float = 1.0,
         hysteresis: float = 0.15,
         hold_ms: float = 60.0,
         note_window_ms: float = 120.0,
@@ -158,14 +168,23 @@ class PitchCorrector:
         pitch_hold_ms: float = 300.0,
         keep_history: bool = False,
     ) -> None:
-        if retune_ms < 0:
-            raise ValueError("retune_ms must be >= 0")
+        if release_ms is None:
+            release_ms = retune_ms
+        for name, value in (("retune_ms", retune_ms), ("release_ms", release_ms), ("hold_ms", hold_ms),
+                            ("note_window_ms", note_window_ms), ("hysteresis", hysteresis)):
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0")
+        if not 0.0 <= amount <= 1.0:
+            raise ValueError("amount must be between 0 and 1")
+        if note_jump <= 0 or max_correction <= 0:
+            raise ValueError("note_jump and max_correction must be > 0")
         if harmony < 0:
             raise ValueError("harmony must be >= 0")
         self.sample_rate = int(sample_rate)
         self.hop_length = int(hop_length)
         self.a4 = float(a4)
         self.max_correction = float(max_correction)
+        self.amount = float(amount)
         self.yin = HeldPitchStream(sample_rate, hop_length=hop_length, hold_ms=pitch_hold_ms,
                                    f_min=f_min, f_max=f_max, threshold=threshold)
         self.shifter = FrequencyShifter(n_fft, overlap)
@@ -193,6 +212,7 @@ class PitchCorrector:
 
         dt = hop_length / sample_rate
         self._alpha = 1.0 if retune_ms == 0 else 1.0 - math.exp(-dt * 1000.0 / retune_ms)
+        self._alpha_release = 1.0 if release_ms == 0 else 1.0 - math.exp(-dt * 1000.0 / release_ms)
         self._hold_frames = int(round(hold_ms / 1000.0 / dt))
         self._recent: deque[float] = deque(maxlen=max(1, int(round(note_window_ms / 1000.0 / dt))))
         self._note_jump = float(note_jump)
@@ -225,6 +245,7 @@ class PitchCorrector:
             desired = target - midi
             if abs(desired) > self.max_correction:  # likely an octave/pitch error: leave it alone
                 desired, target = 0.0, math.nan
+            desired *= self.amount
             self._unvoiced_run = 0
         else:
             self._unvoiced_run += 1
@@ -237,7 +258,9 @@ class PitchCorrector:
                 target = self.snapper.current if self.snapper.current is not None else math.nan
 
         self._desired = desired
-        self.correction += self._alpha * (desired - self.correction)
+        # Attack while pulling toward a note; release while letting go (nothing to correct).
+        alpha = self._alpha if desired != 0.0 else self._alpha_release
+        self.correction += alpha * (desired - self.correction)
         if desired == 0.0 and abs(self.correction) < 0.005:  # < 0.5 cent: bypass exactly
             self.correction = 0.0
         self.ratio = 2.0 ** (self.correction / 12.0)

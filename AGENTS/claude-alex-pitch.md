@@ -1,7 +1,7 @@
 # Agent: Claude (working for Alex): pitch detection, microphone, plots, autotune pipeline, dashboard playback
 
 **Status:** idle, waiting for the next task from Alex
-**Last updated:** 2026-11-20 15:14 PT
+**Last updated:** 2026-11-20 15:45 PT
 
 ## Done
 | What | Files | Commit |
@@ -19,6 +19,8 @@
 | Before/after plot `plot_correction()` (sung vs target vs corrected on a note grid, cents off target) | `dsfp_tune/plotting.py` | `1f8dcb1` |
 | CLI `python tune.py autotune [file] [--key "A minor"] [--retune-ms N] [--live]`: records (or loads), corrects, saves `data/output/<name>_tuned.wav`, plays original then corrected, plots. `--live` refuses to run on built-in speakers (feedback risk) without `--allow-speakers` | `tune.py`, README | `1f8dcb1` |
 | **Dashboard: autotuned playback of microphone takes.** The page keeps the whole take while the mic runs (up to 5 min). On Stop, a "Last recording" panel offers ▶ Original / ▶ Autotuned, a retune-speed slider and WAV downloads. The new `POST /api/autotune?sample_rate=&retune_ms=&mode=&tonic=&scale=` takes raw float32 and returns a corrected WAV (summary JSON in the `X-Autotune-Summary` header), via `autotune_samples()` → `correct_pitch()`. It uses the page's snap settings, and changing them or the slider re-processes the take. Verified end to end in headless Chromium with a fake-mic WAV: notes at +36/−39/+31¢ came back within ±1¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `dsfp_tune/io/audio_io.py` (`wav_bytes`), `tests/test_web_autotune.py`, README | this commit |
+| **Correction knobs.** New `PitchCorrector` arguments: `amount` (0-1, correction strength; chord voices follow the lead's applied correction) and `release_ms` (let-go time constant; `None` = same as `retune_ms`, so default behaviour is unchanged). All tuning arguments are now validated. CLI: `autotune --amount 0.5 --release-ms 200` | `dsfp_tune/correction.py`, `tune.py`, `tests/test_correction.py` | this commit |
+| **Dashboard Advanced tab.** The Snapping card is now "Correction", with tabs Snapping / Advanced. Advanced has 8 sliders (attack, release, amount, note stickiness, note decision window, instant note change, hold, max correction), defined in one `ADVANCED` list in `app.js`. Attack stays in sync with the recording panel's retune slider; values are kept in localStorage (not in `SnapSettings`); Reset to defaults. `/api/autotune` takes them as query parameters, range-checked against `ADVANCED_LIMITS` in `server.py`, and echoes them in `summary["advanced"]`. Verified in headless Chromium: amount 50% took a take from +36/−39/+31¢ to +19/−21/+16¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `tests/test_web_autotune.py`, README | this commit |
 
 ## In progress
 Nothing.
@@ -36,6 +38,7 @@ Nothing.
   - `app.js`: `finishRecording()`, `autotuneRecording()`, `playRecording()`, `wavBlob()`; `startMic`/`stopMic` collect the take; `settingsChanged()` re-runs autotune.
 
   Not touched: the `settings.py` docstring still says "Pitch correction isn't built yet".
+- **Ullas: the Snapping card is now the "Correction" card with two tabs.** All your existing controls, including harmony, are unchanged inside the Snapping pane (`.settings-pane[data-pane=snap]`). I didn't add the advanced knobs to `SnapSettings`: they're per-browser and passed as query parameters.
 - **File mode has no autotuned playback yet.** `/api/autotune` takes raw samples, so the page could send the decoded file the same way.
 - **Guinevere's `scripts/freq_shift.py` (as of `403f139`) was left untouched.** As written, it returns `ifft` of only the bins near f0: given 1 s of audio it returns 45 complex samples, the second `sel` is unused, and nothing moves to `f0*shift`. So the pipeline uses `dsfp_tune/synthesis/freq_shift.py`, which implements the same idea. Guinevere, compare the two, or swap in your version behind the same `process(block, ratio)` interface.
 - **Target-note logic now exists:** `dsfp_tune/correction.py`. It *reads* `dsfp_tune/theory` (`Key`, `parse_key`, `freq_to_midi`) and doesn't change it. Ullas had held off on key snapping; this is where it lives now.

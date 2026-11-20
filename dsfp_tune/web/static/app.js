@@ -11,6 +11,28 @@ const HOLD_S = 0.15;              // keep showing the last pitch this long after
 const MAX_RECORDING_S = 300;      // keep at most this much of a microphone take for playback/autotune
 const MIN_RECORDING_S = 0.3;
 
+// Advanced correction settings (PitchCorrector arguments, sent to /api/autotune). Slider values are in
+// the units shown; `div` converts to the API's units (cents -> semitones, % -> 0..1).
+const ADVANCED = [
+  { id: 'retune_ms', label: 'Attack (retune speed)', min: 0, max: 200, step: 5, def: 25, unit: 'ms',
+    help: 'How fast the voice is pulled onto the note. 0 = instant and robotic; 100+ = gentle.' },
+  { id: 'release_ms', label: 'Release', min: 0, max: 500, step: 10, def: 25, unit: 'ms',
+    help: 'How fast the correction lets go when a note ends or its pitch is lost.' },
+  { id: 'amount', label: 'Correction amount', min: 0, max: 100, step: 5, def: 100, unit: '%', div: 100,
+    help: 'How far notes are pulled: 100% lands exactly on the note, 50% goes halfway.' },
+  { id: 'hysteresis', label: 'Note stickiness', min: 0, max: 50, step: 5, def: 15, unit: '¢', div: 100,
+    help: 'How far past the halfway point between two notes before the target switches.' },
+  { id: 'note_window_ms', label: 'Note decision window', min: 0, max: 400, step: 10, def: 120, unit: 'ms',
+    help: "The pitch is averaged over this long to choose the note, so vibrato doesn't flip notes." },
+  { id: 'note_jump', label: 'Instant note change', min: 25, max: 200, step: 5, def: 75, unit: '¢', div: 100,
+    help: 'A jump bigger than this switches to the new note right away.' },
+  { id: 'hold_ms', label: 'Hold through dropouts', min: 0, max: 300, step: 10, def: 60, unit: 'ms',
+    help: 'Keeps correcting through short gaps in pitch detection inside a note.' },
+  { id: 'max_correction', label: 'Maximum correction', min: 50, max: 1200, step: 50, def: 200, unit: '¢', div: 100,
+    help: 'Never shifts further than this, so pitch-detection errors are left alone.' },
+];
+const ADVANCED_STORE = 'dsfp-advanced';
+
 const state = {
   theory: null,
   settings: { mode: 'chromatic', tonic: 0, scale: 'major', harmony: 0 },
@@ -18,6 +40,7 @@ const state = {
   file: null,      // { name, duration, sampleRate, samples, peaks, track, midi }
   live: null,      // see startMic()
   recording: null, // last microphone take: see finishRecording()
+  advanced: loadAdvanced(),  // see ADVANCED; kept in this browser's localStorage
   view: null,      // { t0, t1 } for file mode
   playing: false,
   colors: {},
@@ -854,7 +877,7 @@ function discardRecording() {
   state.recording = null;
 }
 
-function retuneMs() { return +$('retuneRange').value; }
+function retuneMs() { return state.advanced.retune_ms; }
 
 function setRecHint(text, kind = '') {
   const h = $('recHint');
@@ -885,8 +908,9 @@ async function autotuneRecording() {
   }
   setRecHint('Autotuning…', 'busy');
   const q = new URLSearchParams({
-    sample_rate: R.sampleRate, retune_ms: retuneMs(), mode: s.mode, tonic: s.tonic, scale: s.scale,
+    sample_rate: R.sampleRate, mode: s.mode, tonic: s.tonic, scale: s.scale,
     harmony: harmonyAvailable() ? (s.harmony || 0) : 0,
+    ...advancedParams(),
   });
   try {
     const res = await fetch(`/api/autotune?${q}`, {
@@ -906,7 +930,7 @@ async function autotuneRecording() {
     $('downloadTuned').hidden = false;
     const target = summary.key || 'the nearest notes';
     setRecHint(summary.voiced_fraction > 0
-      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}`
+      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}${summary.advanced && summary.advanced.amount < 1 ? ` · amount ${Math.round(summary.advanced.amount * 100)}%` : ''}`
       : 'No sung pitch found in this take, so the autotuned version sounds the same.');
   } catch (err) {
     if (state.recording !== R || job !== R.job) return;
@@ -938,6 +962,83 @@ function syncRecordingButtons() {
   const playing = recPlayer.paused ? '' : recPlayer.dataset.which;
   $('playOriginal').setAttribute('aria-pressed', String(playing === 'original'));
   $('playTuned').setAttribute('aria-pressed', String(playing === 'tuned'));
+}
+
+// ---------------------------------------------------------------------------
+// Advanced correction settings (Correction card > Advanced tab)
+// ---------------------------------------------------------------------------
+function loadAdvanced() {
+  const a = Object.fromEntries(ADVANCED.map((k) => [k.id, k.def]));
+  try {
+    const saved = JSON.parse(localStorage.getItem(ADVANCED_STORE) || '{}');
+    for (const k of ADVANCED) {
+      const v = Number(saved[k.id]);
+      if (saved[k.id] != null && Number.isFinite(v) && v >= k.min && v <= k.max) a[k.id] = v;
+    }
+  } catch (e) { /* storage unavailable: use the defaults */ }
+  return a;
+}
+
+function saveAdvanced() {
+  try { localStorage.setItem(ADVANCED_STORE, JSON.stringify(state.advanced)); } catch (e) { /* private mode */ }
+}
+
+const knobText = (k, v) => (k.unit === 'ms' ? `${v} ms` : `${v}${k.unit}`);
+
+function buildAdvancedUI() {
+  $('advancedFields').innerHTML = ADVANCED.map((k) => `
+    <div class="knob" data-knob="${k.id}">
+      <label class="field-label" for="adv-${k.id}">${k.label}<output id="adv-${k.id}-value" for="adv-${k.id}"></output></label>
+      <input type="range" id="adv-${k.id}" min="${k.min}" max="${k.max}" step="${k.step}">
+      <p class="knob__help">${k.help}</p>
+    </div>`).join('');
+  for (const k of ADVANCED) {
+    const input = $(`adv-${k.id}`);
+    input.addEventListener('input', () => setAdvanced(k.id, +input.value, false));
+    input.addEventListener('change', () => setAdvanced(k.id, +input.value, true));
+  }
+  $('advancedReset').addEventListener('click', () => {
+    for (const k of ADVANCED) state.advanced[k.id] = k.def;
+    saveAdvanced();
+    syncAdvancedUI();
+    if (state.recording) scheduleAutotune();
+  });
+  $('settingsTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-tab]');
+    if (b) setSettingsTab(b.dataset.tab);
+  });
+  syncAdvancedUI();
+}
+
+function setSettingsTab(tab) {
+  for (const b of $('settingsTabs').querySelectorAll('button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  for (const p of document.querySelectorAll('.settings-pane')) p.hidden = p.dataset.pane !== tab;
+}
+
+/** Change one setting; `commit` (slider released) saves it and re-processes the last take. */
+function setAdvanced(id, value, commit) {
+  state.advanced[id] = value;
+  syncAdvancedUI();
+  if (commit) {
+    saveAdvanced();
+    if (state.recording) scheduleAutotune();
+  }
+}
+
+function syncAdvancedUI() {
+  for (const k of ADVANCED) {
+    const v = state.advanced[k.id], input = $(`adv-${k.id}`);
+    if (+input.value !== v) input.value = String(v);
+    $(`adv-${k.id}-value`).textContent = knobText(k, v);
+    input.closest('.knob').classList.toggle('is-changed', v !== k.def);
+  }
+  $('retuneRange').value = String(state.advanced.retune_ms);
+  $('retuneValue').textContent = `${state.advanced.retune_ms} ms`;
+}
+
+/** The advanced settings as /api/autotune query parameters, in the API's units. */
+function advancedParams() {
+  return Object.fromEntries(ADVANCED.map((k) => [k.id, state.advanced[k.id] / (k.div || 1)]));
 }
 
 /** 16-bit PCM WAV, so the original take can be played and downloaded. */
@@ -997,8 +1098,10 @@ async function init() {
   $('playOriginal').addEventListener('click', () => playRecording('original'));
   $('playTuned').addEventListener('click', () => playRecording('tuned'));
   for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, syncRecordingButtons);
-  $('retuneRange').addEventListener('input', () => { $('retuneValue').textContent = `${retuneMs()} ms`; });
-  $('retuneRange').addEventListener('change', () => { if (state.recording) autotuneRecording(); });
+  // The recording panel's retune slider is the same setting as Advanced > Attack.
+  $('retuneRange').addEventListener('input', (e) => setAdvanced('retune_ms', +e.target.value, false));
+  $('retuneRange').addEventListener('change', (e) => setAdvanced('retune_ms', +e.target.value, true));
+  buildAdvancedUI();
   const player = $('player');
   player.addEventListener('play', () => { state.playing = true; $('playButton').classList.add('is-playing'); stopRecordingPlayback(); });
   player.addEventListener('pause', () => { state.playing = false; $('playButton').classList.remove('is-playing'); requestDraw(); });
