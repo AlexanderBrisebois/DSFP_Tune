@@ -5,11 +5,11 @@ from scipy.fft import fft, ifft, fftfreq, fftshift, ifftshift
 
 def freq_shift(freq, power, f_fund, shift, sample_rate = 44100):
     # first we'll extract the power of the fundamental frequency
-    sel = (freq == f_fund)
+    sel = np.isclose(freq,f_fund,rtol=0.1)
     power_fund = power[sel]
 
     # then we will shift the power to the correct frequency
-    sel = (freq == f_fund*shift)
+    sel = np.isclose(freq,f_fund*shift)
     power_new = power_fund
 
     # and we will perform an inverse FFT
