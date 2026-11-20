@@ -7,7 +7,7 @@ GET  /api/theory            tonics, scales and every key's notes, from :mod:`dsf
 GET  /api/settings          saved snap settings
 POST /api/settings          save snap settings (JSON body)
 POST /api/analyze           audio file as the raw body -> pitch track (load_audio + yin_track)
-POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one YinStream per mic session
+POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one HeldPitchStream per mic session
 POST /api/live/<id>         raw little-endian float32 mono samples -> pitch estimates
 POST /api/live/<id>/stop    forget the session
 POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony=..
@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from dsfp_tune.analysis import YinStream, yin_track
+from dsfp_tune.analysis import HeldPitchStream, hold_track, yin_track
 from dsfp_tune.correction import correct_pitch
 from dsfp_tune.io import AudioLoadError, load_audio, wav_bytes
 from dsfp_tune.theory import NOTE_NAMES_FLAT, NOTE_NAMES_SHARP, SCALES, Key
@@ -86,7 +86,8 @@ def analyze_samples(samples: np.ndarray, sample_rate: int) -> dict:
     """Pitch track of a mono signal, as JSON-ready lists."""
     hop = _hop_for(sample_rate)
     f_max = min(F_MAX, sample_rate / 4)
-    track = yin_track(samples, sample_rate, hop_length=hop, f_min=F_MIN, f_max=f_max)
+    # Pitch hold: carry the pitch over short detection gaps inside notes (same as the autotune).
+    track = hold_track(yin_track(samples, sample_rate, hop_length=hop, f_min=F_MIN, f_max=f_max), samples)
     conf = np.clip(1.0 - track.aperiodicity, 0.0, 1.0)
     return {
         "sample_rate": int(sample_rate),
@@ -162,7 +163,7 @@ class LiveSessions:
         if not 8000 <= sample_rate <= 192000:
             raise ValueError(f"unsupported sample rate {sample_rate}")
         hop = _hop_for(sample_rate)
-        stream = YinStream(sample_rate, hop_length=hop, f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
+        stream = HeldPitchStream(sample_rate, hop_length=hop, f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
         sid = uuid.uuid4().hex
         with self._lock:
             self._prune()
