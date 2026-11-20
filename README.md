@@ -10,12 +10,14 @@ DSFP_Tune/
 ├── tune.py              # the CLI entry point
 ├── dsfp_tune/           # library code used by tune.py
 │   ├── io/              # audio loading (MP3/WAV/... -> NumPy)    [done]
+│   ├── theory/          # notes <-> frequencies, keys/scales      [done]
 │   ├── analysis/        # STFT, pitch (f0) detection              [next]
 │   └── synthesis/       # pitch shifting / resynthesis            [later]
 ├── cpp/                 # optional C++ (pybind11) kernels for speed
 ├── tests/               # pytest suite
 ├── scripts/             # one-off helper scripts
 ├── notebooks/           # Jupyter exploration
+├── data/theory/         # generated notes.csv and keys.json
 ├── data/audio/          # input audio (git-ignored)
 ├── data/output/         # processed audio (git-ignored)
 ├── pytest.ini
@@ -56,3 +58,20 @@ sig = load_audio("song.mp3", sample_rate=22050, mono=False)   # resample, keep s
 Decoding backends: `ffmpeg` (any format, can resample) and `soundfile`
 (libsndfile >= 1.1; no external binary, no resampling). `backend="auto"` picks
 for you.
+
+## Notes and keys database
+
+`dsfp_tune/theory` holds the source of truth (12-TET, A4 = 440 Hz by default);
+`scripts/build_note_db.py [--a4 432]` regenerates the files in `data/theory/`:
+
+- `notes.csv`: MIDI 0..127 with sharp/flat name, pitch class, octave, frequency (Hz)
+- `keys.json`: 12 tonics x 15 scales (major, minor, harmonic/melodic minor,
+  the 7 modes, pentatonics, blues, chromatic) with intervals, pitch classes,
+  spelled note names and every in-key MIDI note
+
+```python
+from dsfp_tune.theory import parse_key, midi_to_freq
+k = parse_key("A minor")
+k.note_names          # ('A', 'B', 'C', 'D', 'E', 'F', 'G')
+k.notes_in_range(57, 69)   # in-key notes A3..A4 with frequencies
+```
