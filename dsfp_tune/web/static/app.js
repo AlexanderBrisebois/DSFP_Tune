@@ -240,12 +240,20 @@ function currentView() {
     const offScreen = pt !== null && (pt < t1 - LIVE_WINDOW_S || pt > t1);
     const userScrolled = performance.now() - (L.userScroll || 0) < 1500;
     if (pt !== null && !userScrolled && ((!recPlayer.paused && !scrub) || offScreen)) {
-      // Follow the playhead, three quarters of the way across.
-      L.viewT1 = t1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
+      // Follow the playhead: it moves until the middle, then the view scrolls under it.
+      L.viewT1 = t1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 2), Math.max(LIVE_WINDOW_S, state.recording.duration));
     }
     return { t0: t1 - LIVE_WINDOW_S, t1, live: true };
   }
-  if (state.source === 'file' && state.file) return { ...state.view, live: false };
+  if (state.source === 'file' && state.file) {
+    // While playing, keep the playhead in the middle once it gets there (unless the user just scrolled).
+    const v = state.view, span = v.t1 - v.t0, D = state.file.duration;
+    if (state.playing && !scrub && !drag && span < D && performance.now() - (state.userScroll || 0) > 1500) {
+      const t0 = Math.max(0, Math.min(D - span, $('player').currentTime - span / 2));
+      if (Math.abs(t0 - v.t0) > 1e-4) state.view = { t0, t1: t0 + span };
+    }
+    return { ...state.view, live: false };
+  }
   return null;
 }
 

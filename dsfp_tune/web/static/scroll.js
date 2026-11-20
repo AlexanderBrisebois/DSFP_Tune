@@ -22,7 +22,7 @@ function timeline() {
     const D = state.file.duration, v = state.view, span = v.t1 - v.t0;
     return {
       t0: v.t0, t1: v.t1, total: D,
-      set(t0) { t0 = Math.max(0, Math.min(D - span, t0)); state.view = { t0, t1: t0 + span }; },
+      set(t0) { t0 = Math.max(0, Math.min(D - span, t0)); state.view = { t0, t1: t0 + span }; state.userScroll = performance.now(); },
     };
   }
   return null;
