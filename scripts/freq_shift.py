@@ -9,7 +9,7 @@ def freq_shift(freq, power, f_fund, shift, sample_rate = 44100):
     power_fund = power[sel]
 
     # then we will shift the power to the correct frequency
-    sel = np.isclose(freq,f_fund*shift)
+    sel = np.isclose(freq,f_fund*shift,rtol=0.1)
     power_new = power_fund
 
     # and we will perform an inverse FFT
