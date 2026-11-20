@@ -51,6 +51,7 @@ __all__ = [
     "PitchEstimate",
     "PitchTrack",
     "Yin",
+    "YinStream",
     "yin_track",
     "difference_function",
     "difference_function_direct",
@@ -278,6 +279,50 @@ class Yin:
         if not found:
             return PitchEstimate(math.nan, aperiodicity, False)
         return PitchEstimate(self.sample_rate / tau_exact, aperiodicity, True)
+
+
+class YinStream:
+    """Real-time wrapper: feed audio blocks of any size, get an estimate every ``hop_length`` samples.
+
+    Keeps the most recent :attr:`Yin.frame_length` samples in a buffer (initially silence)
+    and runs :meth:`Yin.detect` on it each time ``hop_length`` new samples have arrived::
+
+        stream = YinStream(44100, hop_length=256)
+        for block in mic:
+            for est in stream.push(block):
+                ...
+
+    Each estimate describes the buffer ending at the latest sample, so it lags the input
+    by about half a frame (plus the hop).
+    """
+
+    def __init__(self, sample_rate: int, hop_length: int = 256, **yin_kwargs) -> None:
+        if hop_length < 1:
+            raise ValueError("hop_length must be positive")
+        self.yin = Yin(sample_rate, **yin_kwargs)
+        self.hop_length = int(hop_length)
+        self._buf = np.zeros(self.yin.frame_length, dtype=np.float64)
+        self._since_last = 0
+
+    def reset(self) -> None:
+        self._buf[:] = 0.0
+        self._since_last = 0
+
+    def push(self, block: np.ndarray) -> list[PitchEstimate]:
+        """Append samples; return the estimates (possibly none) completed by this block."""
+        block = np.asarray(block, dtype=np.float64).ravel()
+        out: list[PitchEstimate] = []
+        pos = 0
+        while pos < len(block):
+            take = min(self.hop_length - self._since_last, len(block) - pos)
+            self._buf[:-take] = self._buf[take:]
+            self._buf[-take:] = block[pos : pos + take]
+            pos += take
+            self._since_last += take
+            if self._since_last == self.hop_length:
+                out.append(self.yin.detect(self._buf))
+                self._since_last = 0
+        return out
 
 
 # ---------------------------------------------------------------------------

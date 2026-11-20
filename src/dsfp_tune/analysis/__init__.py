@@ -1,5 +1,16 @@
-"""Spectral analysis: pitch (f0) detection. (STFT etc. to come.)"""
+"""Spectral analysis: pitch (f0) detection, note helpers. (STFT etc. to come.)"""
 
-from dsfp_tune.analysis.yin import PitchEstimate, PitchTrack, Yin, yin_track
+from dsfp_tune.analysis.notes import hz_to_midi, midi_to_hz, nearest_note, note_name
+from dsfp_tune.analysis.yin import PitchEstimate, PitchTrack, Yin, YinStream, yin_track
 
-__all__ = ["PitchEstimate", "PitchTrack", "Yin", "yin_track"]
+__all__ = [
+    "PitchEstimate",
+    "PitchTrack",
+    "Yin",
+    "YinStream",
+    "yin_track",
+    "hz_to_midi",
+    "midi_to_hz",
+    "nearest_note",
+    "note_name",
+]

@@ -29,3 +29,9 @@ envs/
 .DS_Store
 .vscode/
 .idea/
+
+# Audio data: keep the folders, not the recordings / outputs
+data/audio/*
+data/output/*
+!data/audio/.gitkeep
+!data/output/.gitkeep

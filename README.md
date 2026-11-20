@@ -30,6 +30,9 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
   as `d(τ) = E0 + E(τ) − 2·r(τ)`, where the cross-correlation `r(τ)` comes from `IFFT(conj(FFT(ref)) · FFT(frame))`.
   The result is identical to the textbook formula and about 24× faster. YIN frames are **not windowed** (no Hann);
   they are zero-padded so the FFT doesn't wrap around. This is separate from any windowed STFT the pitch shifter uses.
+- **The microphone is polled inside GUI windows.** Matplotlib's macOS window loop holds Python's GIL, which starves
+  audio-callback threads (no audio arrives). The live window therefore reads the microphone from its animation timer
+  (`MicrophoneStream(use_callback=False)`). Elsewhere, the callback-and-queue mode is used.
 - **Offline first, then real time.** Develop and validate in Python/NumPy on audio files, then build a streaming
   version, and port the hot loops to C++ (see [cpp/README.md](cpp/README.md)) if needed.
 - **One detector interface:** `detect(frame) -> (f0, aperiodicity, voiced)`, so detectors can be swapped or moved
@@ -43,7 +46,10 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | Audio loading (MP3/WAV/FLAC, resample, downmix) — `dsfp_tune.io` | ✅ Done |
 | Waveform inspection script — `scripts/inspect_audio.py` | ✅ Done |
 | YIN pitch detector (FFT-based) — `dsfp_tune.analysis.yin` | ✅ Done, tested on synthetic signals |
-| Test with real vocal recordings, plot the f0 track | 🔜 Next |
+| Microphone input: record to WAV, live pitch readout — `dsfp_tune.io.microphone`, `scripts/record_audio.py` | ✅ Done |
+| Streaming YIN (feed blocks, get an estimate every hop) — `YinStream` | ✅ Done |
+| Pitch plots: live scrolling window + recording/file analysis — `dsfp_tune.plotting` | ✅ Done |
+| Test with real vocal recordings and tune YIN settings (threshold, range) | 🔜 Next |
 | Note mapping: key/scale snap, hysteresis, retune speed | ⏳ Planned |
 | Pitch shifter (phase vocoder or PSOLA) with formant preservation — `dsfp_tune.synthesis` | ⏳ Planned |
 | End-to-end offline tool: file in → corrected file out | ⏳ Planned |
@@ -54,8 +60,11 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 
 ```
 src/dsfp_tune/
-  io/audio_io.py      load audio → AudioSignal (float32 samples, sample rate, time axis)
-  analysis/yin.py     YIN pitch detector (Yin, yin_track)
+  io/audio_io.py      load audio → AudioSignal (float32 samples, sample rate, time axis); save_wav
+  io/microphone.py    microphone: record(), MicrophoneStream, list_input_devices()
+  analysis/yin.py     YIN pitch detector (Yin, YinStream, yin_track)
+  analysis/notes.py   Hz ↔ MIDI ↔ note names
+  plotting.py         plot_pitch (static analysis figure), LivePitchPlot (live window)
   synthesis/          pitch shifting (to do)
   cli.py              command-line entry points
 scripts/              runnable helper scripts
@@ -75,6 +84,10 @@ pip install -e ".[dev]"        # or: pip install -r requirements.txt
 python -m pytest               # run the tests
 ```
 
+Microphone input uses **sounddevice** (included in the `dev` and `mic` extras; PortAudio is bundled on macOS and Windows,
+on Linux install `libportaudio2`). On macOS, the app running Python (Terminal, iTerm or VS Code) needs microphone
+permission: System Settings → Privacy & Security → Microphone. Without it, recordings are silent and the script says so.
+
 To decode MP3 or resample, install **ffmpeg** (`brew install ffmpeg` on macOS). The `soundfile` package also reads
 MP3/WAV/FLAC but can't resample.
 
@@ -86,7 +99,29 @@ Inspect a file:
 python scripts/inspect_audio.py data/audio/song.mp3 --plot
 ```
 
-Track pitch:
+Record from the microphone, or watch the detected pitch live:
+
+```bash
+python scripts/record_audio.py --live              # live pitch window (close it to stop)
+python scripts/record_audio.py                     # record 5 s → data/audio/mic_<timestamp>.wav, then plot it
+python scripts/record_audio.py --seconds 10 --out data/audio/scale.wav
+python scripts/record_audio.py --live --no-plot    # text tuner in the terminal instead (Ctrl+C to stop)
+python scripts/record_audio.py --list-devices      # pick another input with --device <index or name>
+python scripts/plot_pitch.py data/audio/scale.wav  # plot any audio file (--save fig.png --no-show to export)
+```
+
+The plots:
+
+- **Live window:** your pitch scrolls over the last 8 s on a one-line-per-semitone grid that follows your voice.
+  The readout shows the note, cents sharp or flat, and Hz. It is green within ±10 cents, amber within ±25, red beyond.
+- **Recording / file plot**, three panels:
+  1. the waveform;
+  2. a spectrogram with the YIN f0 line on top. The line should sit on the lowest bright harmonic; if it jumps to
+     a higher one, that's an octave error;
+  3. cents off the note being held, with a green ±10 cent band. The held note is found with a running median, so
+     vibrato shows as a smooth wave.
+
+Track pitch in code:
 
 ```python
 from dsfp_tune import load_audio
