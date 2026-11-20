@@ -8,9 +8,11 @@
     python tune.py pitch data/audio/take.wav     # plot pitch of a file
     python tune.py devices                       # list microphones
     python tune.py web                           # dashboard in the browser (file or mic)
+    python tune.py web --public                  # same, plus a public trycloudflare.com link
     python tune.py autotune                      # record, pitch-correct, play back, plot
     python tune.py autotune take.wav --key "A minor" --retune-ms 0
     python tune.py autotune --live               # real-time correction (headphones!)
+    python tune.py autotune take.wav --key C --harmony 0.5   # add the key's triad on each note
 """
 
 from __future__ import annotations
@@ -235,8 +237,17 @@ def _parse_key_arg(text: str | None):
 
 
 def _correction_settings(args: argparse.Namespace, default_fft: int) -> dict:
+    key = _parse_key_arg(args.key)
+    if args.harmony < 0:
+        raise SystemExit("tune.py autotune: --harmony must be >= 0")
+    if args.harmony > 0:
+        if key is None:
+            raise SystemExit('tune.py autotune: --harmony needs --key (e.g. --key "C major")')
+        if len(key.intervals) != 7:
+            raise SystemExit(f"tune.py autotune: --harmony needs a 7-note key; {key.name} has {len(key.intervals)} notes")
     return dict(
-        key=_parse_key_arg(args.key),
+        key=key,
+        harmony=args.harmony,
         retune_ms=args.retune_ms,
         f_min=args.f_min,
         f_max=args.f_max,
@@ -269,7 +280,8 @@ def cmd_autotune(args: argparse.Namespace) -> None:
         stem = rec_path.stem if rec_path else "mic"
 
     key = settings["key"]
-    print(f"correcting: key {key.name if key else 'chromatic (any semitone)'}, retune {args.retune_ms:g} ms ...")
+    print(f"correcting: key {key.name if key else 'chromatic (any semitone)'}, retune {args.retune_ms:g} ms"
+          + (f", chord harmony {args.harmony:g}" if args.harmony else "") + " ...")
     result = correct_pitch(sig.samples, sig.sample_rate, **settings)
 
     shifted = result.correction[result.voiced] * 100
@@ -280,6 +292,12 @@ def cmd_autotune(args: argparse.Namespace) -> None:
               f"(max {np.max(np.abs(shifted)):.0f}) · notes: {' '.join(notes[:16])}{' ...' if len(notes) > 16 else ''}")
     else:
         print("no pitched audio found - nothing to correct")
+
+    if args.harmony:
+        peak = float(np.max(np.abs(result.samples), initial=0.0))
+        if peak > 0.99:  # lead + chord voices can exceed full scale: scale down instead of clipping
+            result.samples *= 0.99 / peak
+            print(f"lowered output level by {20 * np.log10(peak / 0.99):.1f} dB to avoid clipping")
 
     out = Path(args.out) if args.out else Path("data/output") / f"{stem}_tuned.wav"
     save_wav(out, result.samples, result.sample_rate)
@@ -329,7 +347,7 @@ def _autotune_live(args: argparse.Namespace) -> None:
     with duplex:
         total_ms = (pc.latency / args.sr + duplex.total_latency) * 1000
         print(f"Live autotune -> {out_name} | key {key.name if key else 'chromatic'} | "
-              f"retune {args.retune_ms:g} ms | latency ~{total_ms:.0f} ms. Ctrl+C to stop.")
+              f"retune {args.retune_ms:g} ms{f' | harmony {args.harmony:g}' if args.harmony else ''} | latency ~{total_ms:.0f} ms. Ctrl+C to stop.")
         try:
             while duplex.active:
                 time.sleep(0.05)
@@ -338,6 +356,8 @@ def _autotune_live(args: argparse.Namespace) -> None:
                     name, cents = nearest_note(f.f0)
                     line = (f"sung {name:<4}{cents:+4.0f}c ({f.f0:6.1f} Hz)  ->  {midi_to_name(int(f.target_midi)):<4}"
                             f" shift {100 * f.correction:+4.0f}c")
+                    if f.chord:
+                        line += "  chord " + " ".join(midi_to_name(m) for m in f.chord)
                 else:
                     line = "      --  (no pitch: passing audio through)"
                 print("\r" + line.ljust(78), end="", flush=True)
@@ -362,7 +382,7 @@ def cmd_devices(args: argparse.Namespace) -> None:
 def cmd_web(args: argparse.Namespace) -> None:
     from dsfp_tune.web.server import serve
 
-    serve(args.host, args.port, open_browser=not args.no_browser, quiet=not args.verbose)
+    serve(args.host, args.port, open_browser=not args.no_browser, quiet=not args.verbose, public=args.public)
 
 
 def _add_pitch_range(p: argparse.ArgumentParser) -> None:
@@ -418,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1, this computer only)")
     p.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     p.add_argument("--verbose", action="store_true", help="log every request")
+    p.add_argument("--public", action="store_true",
+                   help="also share it through a Cloudflare quick tunnel (needs cloudflared; new link each run)")
     p.set_defaults(func=cmd_web)
 
     p = sub.add_parser(
@@ -431,6 +453,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--key", help='restrict to a key, e.g. "A minor", "F# major", "Bb dorian" (default: any semitone)')
     p.add_argument("--retune-ms", type=float, default=25.0,
                    help="how fast pitch glides to the note: 0 = instant/robotic, 100+ = natural (default 25)")
+    p.add_argument("--harmony", type=float, default=0.0, metavar="LEVEL",
+                   help="add the key's triad on each snapped note (C major + A -> A C E): level of the third "
+                   "and fifth voices relative to the lead, e.g. 0.5 (default 0 = off; needs --key)")
     p.add_argument("--live", action="store_true", help="real-time: microphone -> corrected audio -> headphones")
     p.add_argument("--seconds", type=float, default=5.0, help="recording length (default 5)")
     p.add_argument("--out", help="corrected WAV path (default data/output/<name>_tuned.wav)")

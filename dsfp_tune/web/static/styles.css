@@ -347,6 +347,9 @@ select:disabled { opacity: 0.6; }
 .retune input[type='range'] { width: 100%; margin: 0; accent-color: var(--accent); }
 .retune__scale { display: flex; justify-content: space-between; color: var(--faint); font-size: 0.72rem; }
 .recording .hint { margin: 0; }
+.harmony { margin-top: 14px; }
+.harmony .hint { margin: 6px 0 0; }
+.harmony.is-disabled .field-label, .harmony.is-disabled input, .harmony.is-disabled .retune__scale { opacity: 0.4; }
 .recording .hint.is-busy::before {
   content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 6px; vertical-align: -1px;
   border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;

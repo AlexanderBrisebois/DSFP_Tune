@@ -1,6 +1,6 @@
 """Snap settings chosen in the dashboard.
 
-Pitch correction isn't built yet. The dashboard stores what the user picked here so the
+The dashboard stores what the user picked here so the
 correction stage can read it later::
 
     from dsfp_tune.web import load_settings
@@ -11,6 +11,9 @@ Modes:
     off        no snapping
     chromatic  snap to the nearest note of the 12-note scale
     key        snap to the nearest note in ``Key(tonic, scale)``
+
+``harmony`` (0..1, default 0 = off) is the level of the added triad voices; it only applies in
+``key`` mode with a 7-note scale (pass it as ``PitchCorrector(..., harmony=s.harmony)``).
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ class SnapSettings:
     mode: str = "chromatic"
     tonic: int = 0            # pitch class 0..11 (C = 0)
     scale: str = "major"
+    harmony: float = 0.0      # chord voice level, see dsfp_tune.correction.PitchCorrector
 
     @classmethod
     def from_dict(cls, data: dict) -> "SnapSettings":
@@ -47,7 +51,10 @@ class SnapSettings:
         if not 0 <= tonic <= 11:
             raise ValueError(f"tonic must be a pitch class 0..11, got {tonic}")
         scale = Key(tonic, str(data.get("scale", cls.scale))).scale   # validates + resolves aliases
-        return cls(mode, tonic, scale)
+        harmony = float(data.get("harmony", cls.harmony))
+        if not 0.0 <= harmony <= 1.0:
+            raise ValueError(f"harmony must be between 0 and 1, got {harmony}")
+        return cls(mode, tonic, scale, harmony)
 
     @property
     def key(self) -> Key | None:

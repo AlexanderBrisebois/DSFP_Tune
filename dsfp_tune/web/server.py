@@ -10,7 +10,7 @@ POST /api/analyze           audio file as the raw body -> pitch track (load_audi
 POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one YinStream per mic session
 POST /api/live/<id>         raw little-endian float32 mono samples -> pitch estimates
 POST /api/live/<id>/stop    forget the session
-POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..
+POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony=..
                             raw little-endian float32 mono samples (a microphone recording)
                             -> pitch-corrected WAV (dsfp_tune.correction.correct_pitch);
                             summary JSON in the X-Autotune-Summary header
@@ -112,6 +112,8 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
 
     Returns ``(wav_bytes, summary)``. Mode ``chromatic`` snaps to the nearest semitone,
     ``key`` to the nearest note of ``settings.key``; ``off`` is rejected (nothing to do).
+    ``settings.harmony`` > 0 adds the key's triad on each snapped note; it applies only in
+    ``key`` mode with a 7-note scale and is ignored otherwise.
     """
     sample_rate = int(sample_rate)
     if settings.mode == "off":
@@ -127,19 +129,25 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
         raise ValueError(f"recording longer than {MAX_AUTOTUNE_SECONDS / 60:.0f} minutes")
 
     key = settings.key
-    result = correct_pitch(x, sample_rate, key=key, retune_ms=retune_ms,
+    harmony = settings.harmony if key is not None and len(key.intervals) == 7 else 0.0
+    result = correct_pitch(x, sample_rate, key=key, retune_ms=retune_ms, harmony=harmony,
                            f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
+    samples = result.samples
+    peak = float(np.max(np.abs(samples), initial=0.0))
+    if harmony and peak > 0.99:  # lead + chord voices can exceed full scale: scale down instead of clipping
+        samples = samples * (0.99 / peak)
     shift = np.abs(result.correction[result.voiced]) * 100.0
     summary = {
         "mode": settings.mode,
         "key": key.name if key is not None else None,
         "retune_ms": float(retune_ms),
+        "harmony": float(harmony),
         "duration": len(x) / sample_rate,
         "voiced_fraction": float(result.voiced.mean()) if len(result.voiced) else 0.0,
         "mean_shift_cents": round(float(shift.mean()), 1) if shift.size else 0.0,
         "max_shift_cents": round(float(shift.max()), 1) if shift.size else 0.0,
     }
-    return wav_bytes(result.samples, sample_rate), summary
+    return wav_bytes(samples, sample_rate), summary
 
 
 class LiveSessions:
@@ -280,7 +288,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if "sample_rate" not in q:
             raise ValueError("sample_rate query parameter is required")
         saved = load_settings(self.settings_path).to_dict()
-        settings = SnapSettings.from_dict({k: q.get(k, saved[k]) for k in ("mode", "tonic", "scale")})
+        settings = SnapSettings.from_dict({k: q.get(k, saved[k]) for k in ("mode", "tonic", "scale", "harmony")})
         raw = self._body()
         samples = np.frombuffer(raw[: len(raw) // 4 * 4], dtype="<f4")
         started = time.monotonic()
@@ -312,10 +320,27 @@ def make_server(host: str = "127.0.0.1", port: int = 8000, settings_path: str | 
     return server
 
 
-def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True, quiet: bool = True) -> None:
+def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True, quiet: bool = True,
+          public: bool = False) -> None:
+    """Run the dashboard until Ctrl+C. ``public=True`` also opens a Cloudflare quick tunnel
+    (see :mod:`dsfp_tune.web.tunnel`) and prints its https://...trycloudflare.com link."""
     server = make_server(host, port, quiet=quiet)
     url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{server.server_address[1]}/"
+    tunnel = None
+    if public:
+        from dsfp_tune.web.tunnel import CloudflareTunnel, TunnelError
+
+        print("Starting Cloudflare tunnel ...")
+        tunnel = CloudflareTunnel(f"http://127.0.0.1:{server.server_address[1]}")
+        try:
+            tunnel.start()
+        except TunnelError as exc:
+            server.server_close()
+            raise SystemExit(f"error: {exc}") from None
     print(f"DSFP Tune dashboard at {url}  (Ctrl+C to stop)")
+    if tunnel:
+        print(f"Public link: {tunnel.public_url}/")
+        print("  Anyone with this link can use the dashboard on this computer. It stops working when you press Ctrl+C.")
     if open_browser:
         import webbrowser
 
@@ -325,6 +350,8 @@ def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True, 
     except KeyboardInterrupt:
         print()
     finally:
+        if tunnel:
+            tunnel.stop()
         server.server_close()
 
 

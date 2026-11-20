@@ -88,9 +88,9 @@ def test_static_page_and_theory(server):
 
 
 def test_settings_endpoint(server, tmp_path):
-    assert call(server + "/api/settings") == {"mode": "chromatic", "tonic": 0, "scale": "major"}
+    assert call(server + "/api/settings") == {"mode": "chromatic", "tonic": 0, "scale": "major", "harmony": 0.0}
     saved = call(server + "/api/settings", json.dumps({"mode": "key", "tonic": 9, "scale": "minor"}).encode())
-    assert saved == {"mode": "key", "tonic": 9, "scale": "minor"}
+    assert saved == {"mode": "key", "tonic": 9, "scale": "minor", "harmony": 0.0}
     assert load_settings(tmp_path / "settings.json") == SnapSettings("key", 9, "minor")
     with pytest.raises(urllib.error.HTTPError) as e:
         call(server + "/api/settings", b'{"mode": "robot"}')

@@ -49,7 +49,7 @@
           <span class="rec-dot"></span><span id="micButtonLabel">Start microphone</span>
         </button>
         <div class="meter" aria-label="Input level"><div class="meter__fill" id="micMeter"></div></div>
-        <p class="hint" id="micHint">Your browser will ask for microphone access. Audio goes only to the local server on this computer.</p>
+        <p class="hint" id="micHint">Your browser will ask for microphone access. Audio goes only to the DSFP Tune server that is running this page.</p>
 
         <div class="recording" id="recording" hidden>
           <div class="recording__head">
@@ -104,6 +104,13 @@
         </div>
       </div>
       <div class="scale-chips" id="scaleChips"></div>
+
+      <div class="retune harmony" id="harmonyField">
+        <label class="field-label" for="harmonyRange">Chord harmony <span id="harmonyValue">Off</span></label>
+        <input type="range" id="harmonyRange" min="0" max="100" step="5" value="0">
+        <div class="retune__scale"><span>off</span><span>as loud as you</span></div>
+        <p class="hint" id="harmonyHint"></p>
+      </div>
       <p class="hint">Microphone recordings are autotuned to these settings. The pitch view previews the note each frame snaps to.</p>
     </section>
 

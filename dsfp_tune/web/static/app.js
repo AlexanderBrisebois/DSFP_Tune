@@ -13,7 +13,7 @@ const MIN_RECORDING_S = 0.3;
 
 const state = {
   theory: null,
-  settings: { mode: 'chromatic', tonic: 0, scale: 'major' },
+  settings: { mode: 'chromatic', tonic: 0, scale: 'major', harmony: 0 },
   source: 'file',
   file: null,      // { name, duration, sampleRate, samples, peaks, track, midi }
   live: null,      // see startMic()
@@ -121,6 +121,28 @@ function buildSettingsUI() {
   });
   tonic.addEventListener('change', () => { state.settings.tonic = +tonic.value; settingsChanged(); });
   $('scaleSelect').addEventListener('change', (e) => { state.settings.scale = e.target.value; settingsChanged(); });
+  const harmony = $('harmonyRange');
+  harmony.addEventListener('input', () => { $('harmonyValue').textContent = harmonyLabel(+harmony.value / 100); });
+  harmony.addEventListener('change', () => { state.settings.harmony = +harmony.value / 100; settingsChanged(); });
+}
+
+function harmonyLabel(level) { return level > 0 ? `${Math.round(level * 100)}%` : 'Off'; }
+
+/** Chord harmony needs a key with 7 notes (the chord is built from the key's own notes). */
+function harmonyAvailable() { return state.settings.mode === 'key' && keyInfo().pitch_classes.length === 7; }
+
+function syncHarmonyUI() {
+  const s = state.settings, ok = harmonyAvailable(), names = keyInfo().note_names;
+  $('harmonyRange').value = String(Math.round((s.harmony || 0) * 100));
+  $('harmonyRange').disabled = !ok;
+  $('harmonyValue').textContent = ok ? harmonyLabel(s.harmony || 0) : 'Off';
+  $('harmonyField').classList.toggle('is-disabled', !ok);
+  // Example: the chord on the 6th note of the key (C major: A -> A C E).
+  $('harmonyHint').textContent = ok
+    ? `Adds the key's chord on each snapped note, e.g. ${names[5]} → ${names[5]} ${names[0]} ${names[2]}.`
+    : s.mode === 'key'
+      ? 'Chords need a 7-note scale (major, minor or a mode).'
+      : 'Choose "Nearest note in key" to add chords from the key.';
 }
 
 function syncSettingsUI() {
@@ -135,6 +157,7 @@ function syncSettingsUI() {
     .map((n, i) => `<span class="chip${i === 0 ? ' chip--tonic' : ''}" title="degree ${i + 1}">${n}</span>`).join('');
   $('scaleChips').classList.toggle('is-dim', !keyMode);
   $('scaleChips').title = keyMode ? k.name : `${k.name} (used for the in-key colouring)`;
+  syncHarmonyUI();
 }
 
 function settingsChanged() {
@@ -863,6 +886,7 @@ async function autotuneRecording() {
   setRecHint('Autotuning…', 'busy');
   const q = new URLSearchParams({
     sample_rate: R.sampleRate, retune_ms: retuneMs(), mode: s.mode, tonic: s.tonic, scale: s.scale,
+    harmony: harmonyAvailable() ? (s.harmony || 0) : 0,
   });
   try {
     const res = await fetch(`/api/autotune?${q}`, {
@@ -882,7 +906,7 @@ async function autotuneRecording() {
     $('downloadTuned').hidden = false;
     const target = summary.key || 'the nearest notes';
     setRecHint(summary.voiced_fraction > 0
-      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms`
+      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}`
       : 'No sung pitch found in this take, so the autotuned version sounds the same.');
   } catch (err) {
     if (state.recording !== R || job !== R.job) return;

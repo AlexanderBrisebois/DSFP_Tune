@@ -129,6 +129,25 @@ def parse_key(text: str) -> Key:
     return Key(tonic, parts[1])
 
 
+def diatonic_triad(key: Key, root_midi: int) -> tuple[int, int, int]:
+    """The triad built on ``root_midi`` from the notes of ``key`` (root, third, fifth as MIDI).
+
+    Stacks every other scale note above the root, so the chord quality comes from the key:
+    C major + A -> (A, C, E) = A minor; C major + G -> (G, B, D); C major + B -> (B, D, F).
+    Needs a 7-note (diatonic) scale and a root that is in the key.
+    """
+    if len(key.intervals) != 7:
+        raise ValueError(f"diatonic triads need a 7-note scale; {key.name} has {len(key.intervals)} notes")
+    root_midi = int(root_midi)
+    pcs = key.pitch_classes
+    if root_midi % 12 not in pcs:
+        raise ValueError(f"MIDI note {root_midi} is not in {key.name}")
+    i = pcs.index(root_midi % 12)
+    third = root_midi + (pcs[(i + 2) % 7] - pcs[i]) % 12
+    fifth = root_midi + (pcs[(i + 4) % 7] - pcs[i]) % 12
+    return root_midi, third, fifth
+
+
 def all_keys(scales: tuple[str, ...] | None = None) -> list[Key]:
     """Every tonic (12) x every scale (default: all in SCALES except chromatic)."""
     scales = scales or tuple(s for s in SCALES if s != "chromatic")
