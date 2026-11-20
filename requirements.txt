@@ -2,5 +2,6 @@ numpy>=1.24
 # optional
 scipy>=1.10        # extra DSP helpers
 soundfile>=0.12    # MP3 decoding without ffmpeg
-matplotlib>=3.7    # --plot
+matplotlib>=3.7    # --plot, pitch plots
+sounddevice>=0.4   # microphone input (record / live)
 pytest>=7          # tests

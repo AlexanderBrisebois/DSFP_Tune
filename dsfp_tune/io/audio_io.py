@@ -11,8 +11,8 @@ Two decoding backends are supported:
 * ``"soundfile"`` – uses the ``soundfile`` package (libsndfile >= 1.1 reads MP3).
                     No external binary needed, but cannot resample.
 
-``backend="auto"`` tries soundfile first when no resampling is requested, and
-falls back to ffmpeg.
+``backend="auto"`` tries soundfile first when no resampling is requested, then (for
+``.wav``) Python's built-in ``wave`` module, and finally ffmpeg.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -114,6 +115,11 @@ def load_audio(
                 return _load_soundfile(path, mono)
             except Exception as exc:  # missing package or unsupported format
                 errors.append(f"soundfile: {exc}")
+            if path.suffix.lower() == ".wav":
+                try:
+                    return _load_wave(path, mono)
+                except Exception as exc:  # e.g. float or compressed WAV
+                    errors.append(f"wave: {exc}")
         try:
             return _load_ffmpeg(path, sample_rate, mono)
         except Exception as exc:
@@ -133,6 +139,28 @@ def _load_soundfile(path: Path, mono: bool) -> AudioSignal:
 
     data, sr = sf.read(str(path), dtype="float32", always_2d=True)
     sig = AudioSignal(data if data.shape[1] > 1 else data[:, 0], int(sr), path)
+    return sig.to_mono() if mono else sig
+
+
+def _load_wave(path: Path, mono: bool) -> AudioSignal:
+    """Read an integer-PCM WAV with the standard library (no extra packages needed)."""
+    with wave.open(str(path), "rb") as w:
+        width, channels, sr = w.getsampwidth(), w.getnchannels(), w.getframerate()
+        raw = w.readframes(w.getnframes())
+    if width == 1:
+        data = (np.frombuffer(raw, np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif width == 2:
+        data = np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0
+    elif width == 3:
+        b = np.frombuffer(raw, np.uint8).reshape(-1, 3).astype(np.int32)
+        v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+        data = (((v << 8) >> 8).astype(np.float32)) / 8388608.0  # sign-extend 24-bit
+    elif width == 4:
+        data = np.frombuffer(raw, "<i4").astype(np.float32) / 2147483648.0
+    else:
+        raise AudioLoadError(f"unsupported WAV sample width {width} bytes")
+    data = data.reshape(-1, channels)
+    sig = AudioSignal(data if channels > 1 else data[:, 0].copy(), int(sr), path)
     return sig.to_mono() if mono else sig
 
 
@@ -172,3 +200,29 @@ def _load_ffmpeg(path: Path, sample_rate: int | None, mono: bool) -> AudioSignal
     if channels > 1:
         data = data[: len(data) - len(data) % channels].reshape(-1, channels)
     return AudioSignal(data, sr, path)
+
+
+def save_wav(path: str | Path, samples: np.ndarray | AudioSignal, sample_rate: int | None = None) -> Path:
+    """Write audio to a 16-bit PCM WAV file (standard library only; readable everywhere).
+
+    ``samples`` is float in [-1, 1] (values outside are clipped), shape ``(n,)`` or
+    ``(n, channels)``, or an :class:`AudioSignal` (then ``sample_rate`` is taken from it).
+    Parent directories are created. Returns the path written.
+    """
+    if isinstance(samples, AudioSignal):
+        sample_rate = samples.sample_rate if sample_rate is None else sample_rate
+        samples = samples.samples
+    if sample_rate is None:
+        raise ValueError("sample_rate is required")
+    data = np.asarray(samples, dtype=np.float64)
+    channels = 1 if data.ndim == 1 else data.shape[1]
+    pcm = np.round(np.clip(data, -1.0, 1.0) * 32767).astype("<i2")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate))
+        w.writeframes(pcm.tobytes())
+    return path
