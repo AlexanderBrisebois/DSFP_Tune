@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from dsfp_tune.native import lib as _native
+
 __all__ = ["FrequencyShifter", "freq_shift"]
 
 _TWO_PI = 2.0 * np.pi
@@ -67,6 +69,8 @@ class FrequencyShifter:
         self._rad_per_bin = _TWO_PI * self.hop / self.n_fft  # phase advance per hop, per bin of frequency
         #: Delay from input to output, in samples.
         self.latency = self.n_fft - 1
+        # C++ version (cpp/src/dsp/FrequencyShifter.cpp) when built; see dsfp_tune/native.py.
+        self._native = _native.FrequencyShifter(self.n_fft, self.overlap) if _native is not None else None
         self.reset()
 
     def reset(self) -> None:
@@ -78,6 +82,8 @@ class FrequencyShifter:
         # hop-1 samples of silence up front make the output length always match the input.
         self._pending = np.zeros(self.hop - 1)
         self.frames_processed = 0
+        if self._native is not None:
+            self._native.reset()
 
     def _frame(self, ratio: float) -> np.ndarray:
         spec = np.fft.rfft(self._in * self.window)
@@ -122,6 +128,8 @@ class FrequencyShifter:
         if not 0.25 <= ratio <= 4.0:
             raise ValueError(f"ratio {ratio} out of range [0.25, 4]")
         block = np.asarray(block, dtype=np.float64).ravel()
+        if self._native is not None:
+            return self._native.process(block, ratio)
         pieces = [self._pending]
         pos = 0
         while pos < len(block):

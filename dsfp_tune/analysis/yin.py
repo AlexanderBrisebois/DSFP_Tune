@@ -47,6 +47,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from dsfp_tune.native import lib as _native
+
 __all__ = [
     "PitchEstimate",
     "PitchTrack",
@@ -246,6 +248,12 @@ class Yin:
         self.frame_length = self.window + self.tau_max
         self.n_fft = 1 << (self.frame_length - 1).bit_length()
         self._silence_rms = None if silence_db is None else 10.0 ** (silence_db / 20.0)
+        # C++ version of detect() (cpp/src/dsp/Yin.cpp) when built; see dsfp_tune/native.py.
+        self._native = (
+            _native.Yin(self.sample_rate, self.f_min, self.f_max, self.window, self.threshold, silence_db)
+            if _native is not None
+            else None
+        )
 
     @property
     def latency_seconds(self) -> float:
@@ -265,6 +273,10 @@ class Yin:
         if len(frame) < self.frame_length:
             raise ValueError(f"frame has {len(frame)} samples, need frame_length = {self.frame_length}")
         frame = frame[: self.frame_length]
+
+        if self._native is not None:
+            f0, aperiodicity, voiced = self._native.detect(frame)
+            return PitchEstimate(f0, aperiodicity, voiced)
 
         if self._silence_rms is not None:
             rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
