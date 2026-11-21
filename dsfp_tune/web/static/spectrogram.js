@@ -196,6 +196,13 @@ function updateLiveSpec(L) {
 }
 
 function syncSpecToggle() {
+  const F = state.file;
+  if (state.source === 'file' && F) {   // files: the heatmap follows the Original / Autotuned playback switch
+    $('specToggle').hidden = false;
+    $('specTuned').disabled = !F.specTuned;
+    for (const b of $('specToggle').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.which === state.fileWhich));
+    return;
+  }
   const R = state.recording;
   const show = state.source === 'mic' && R && R.spec && !(state.live && state.live.running);
   const box = $('specToggle');
@@ -230,7 +237,9 @@ function specSource(view) {
     return S && S.owner === L ? { S, ring: true, colAt: (t) => (t * S.sr - SPEC_N / 2) / S.hop } : null;
   }
   const F = state.file;
-  return F && F.spec ? { S: F.spec, colAt: (t) => (t * F.spec.sr) / F.spec.hop } : null;
+  if (!F || !F.spec) return null;
+  const S = (state.fileWhich === 'tuned' && F.specTuned) || F.spec;
+  return { S, colAt: (t) => (t * S.sr) / S.hop };
 }
 
 function drawSpec() {
@@ -333,6 +342,7 @@ function initSpec() {
   $('specToggle').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-which]');
     if (!b || b.disabled) return;
+    if (state.source === 'file' && state.file) { setFileVersion(b.dataset.which); return; }
     spec.which = b.dataset.which;
     syncSpecToggle(); requestDraw();
   });

@@ -304,6 +304,9 @@ select:disabled { opacity: 0.6; }
 .canvas-wrap--roll { flex: 1; min-height: 240px; cursor: crosshair; }
 .canvas-wrap--keys { height: 150px; }
 
+.file-tune { display: grid; gap: 8px; }
+.file-tune .field-label { margin: 0; }
+
 /* time scroll bars under the waveform and the spectrogram */
 .timebar { position: relative; height: 10px; margin-top: 8px; border-radius: 5px; background: var(--bg); border: 1px solid var(--border); cursor: pointer; touch-action: none; }
 .timebar__thumb { position: absolute; top: 1px; bottom: 1px; left: 0; width: 100%; border-radius: 4px; background: var(--border-strong); cursor: grab; }

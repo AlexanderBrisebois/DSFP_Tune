@@ -188,6 +188,7 @@ function settingsChanged() {
   saveSettings();
   if (state.file) state.file.hist = histogram(state.file.midi);
   if (state.recording) scheduleAutotune();
+  if (state.file) scheduleFileAutotune();
   drawAll();
 }
 
@@ -686,6 +687,9 @@ async function loadFile(file) {
     };
     state.view = { t0: 0, t1: audio.duration > 30 ? 20 : audio.duration };
     specForFile(state.file);
+    state.fileWhich = 'original';
+    syncFileVersionUI();
+    autotuneFile();
     $('fileMeta').textContent = `${fmtTime(audio.duration)} · ${track.sample_rate / 1000} kHz · `
       + `${Math.round(track.voiced_fraction * 100)}% pitched · analysed in ${track.analysis_seconds.toFixed(1)} s`;
     $('playButton').disabled = false;
@@ -1090,6 +1094,7 @@ function buildAdvancedUI() {
     saveAdvanced();
     syncAdvancedUI();
     if (state.recording) scheduleAutotune();
+    if (state.file) scheduleFileAutotune();
   });
   $('settingsTabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-tab]');
@@ -1110,6 +1115,7 @@ function setAdvanced(id, value, commit) {
   if (commit) {
     saveAdvanced();
     if (state.recording) scheduleAutotune();
+    if (state.file) scheduleFileAutotune();
   }
 }
 
@@ -1209,6 +1215,7 @@ async function init() {
   attachViewControls($('specCanvas'), GUTTER);
   initSpec();
   initTimebars();
+  initFileTune();
   new ResizeObserver(requestDraw).observe(document.querySelector('.main'));
 
   try {

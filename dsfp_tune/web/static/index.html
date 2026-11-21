@@ -42,6 +42,15 @@
           <div class="file-info__name" id="fileName"></div>
           <div class="file-info__meta" id="fileMeta"></div>
         </div>
+        <div class="file-tune" id="fileTune" hidden>
+          <span class="field-label">Play</span>
+          <div class="segmented" id="fileVersion">
+            <button type="button" data-which="original" aria-selected="true">Original</button>
+            <button type="button" data-which="tuned" id="fileTunedButton" aria-selected="false" disabled>Autotuned</button>
+          </div>
+          <p class="hint" id="fileTuneHint"></p>
+          <div class="recording__links"><span>Download:</span><a id="fileDownloadTuned" download="autotuned.wav" hidden>autotuned</a></div>
+        </div>
       </div>
 
       <div class="source-pane" data-pane="mic" hidden>
@@ -212,6 +221,7 @@
 <audio id="player" preload="auto"></audio>
 <script src="spectrogram.js"></script>
 <script src="scroll.js"></script>
+<script src="filetune.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
