@@ -106,7 +106,8 @@ class HeldPitchStream(YinStream):
     """:class:`~dsfp_tune.analysis.YinStream` with a :class:`PitchHold` on its output.
 
     Extra keyword arguments ``hold_ms``, ``level_db``, ``octave_ms``, ``median`` go to the hold;
-    the rest go to :class:`~dsfp_tune.analysis.Yin`.
+    the rest go to :class:`~dsfp_tune.analysis.Yin` (or, with ``method="fft"``, to
+    :class:`~dsfp_tune.analysis.FftPitch`).
     """
 
     def __init__(self, sample_rate: int, hop_length: int = 256, hold_ms: float = 300.0, level_db: float = 12.0,

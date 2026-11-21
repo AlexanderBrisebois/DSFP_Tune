@@ -14,6 +14,9 @@ Modes:
 
 ``harmony`` (0..1, default 0 = off) is the level of the added triad voices; it only applies in
 ``key`` mode with a 7-note scale (pass it as ``PitchCorrector(..., harmony=s.harmony)``).
+
+``pitch_method`` (``"yin"`` default, or ``"fft"``) picks the pitch detector for the pitch view,
+the live microphone and the autotune (``PitchCorrector(..., pitch_method=s.pitch_method)``).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from pathlib import Path
 from dsfp_tune.theory import Key, parse_pitch_class
 
 SNAP_MODES = ("off", "chromatic", "key")
+PITCH_METHODS = ("yin", "fft")   # same names as dsfp_tune.analysis.PITCH_METHODS
 
 #: Default location, inside the git-ignored data/output/ folder.
 DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "output" / "dashboard_settings.json"
@@ -35,6 +39,7 @@ class SnapSettings:
     tonic: int = 0            # pitch class 0..11 (C = 0)
     scale: str = "major"
     harmony: float = 0.0      # chord voice level, see dsfp_tune.correction.PitchCorrector
+    pitch_method: str = "yin"  # pitch detector: "yin" or "fft" (largest FFT peak)
 
     @classmethod
     def from_dict(cls, data: dict) -> "SnapSettings":
@@ -54,7 +59,10 @@ class SnapSettings:
         harmony = float(data.get("harmony", cls.harmony))
         if not 0.0 <= harmony <= 1.0:
             raise ValueError(f"harmony must be between 0 and 1, got {harmony}")
-        return cls(mode, tonic, scale, harmony)
+        pitch_method = str(data.get("pitch_method", cls.pitch_method)).lower()
+        if pitch_method not in PITCH_METHODS:
+            raise ValueError(f"pitch_method must be one of {', '.join(PITCH_METHODS)}, got {pitch_method!r}")
+        return cls(mode, tonic, scale, harmony, pitch_method)
 
     @property
     def key(self) -> Key | None:

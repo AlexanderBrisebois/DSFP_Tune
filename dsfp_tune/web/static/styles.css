@@ -400,3 +400,7 @@ select:disabled { opacity: 0.6; }
 .knob__help { margin: 3px 0 0; color: var(--faint); font-size: 0.72rem; line-height: 1.35; }
 .knob.is-changed .field-label output { color: var(--accent); }
 #advancedReset { width: 100%; }
+
+/* Pitch detector switch (YIN / FFT peak) in the Input card */
+.pitch-method { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0 12px; }
+.pitch-method .field-label { margin: 0; }

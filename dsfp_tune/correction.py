@@ -141,6 +141,9 @@ class PitchCorrector:
         When YIN loses the pitch inside a note (breathy tone, noise), carry the last pitch over
         for up to this long while the input stays loud, and ignore brief octave jumps (see
         :class:`~dsfp_tune.analysis.PitchHold`). Keeps correction and chords steady. 0 = off.
+    pitch_method:
+        ``"yin"`` (default) or ``"fft"`` (largest FFT peak, see
+        :class:`~dsfp_tune.analysis.FftPitch`). ``threshold`` applies to either.
     keep_history:
         Store every :class:`CorrectionFrame` in :attr:`history` (for plots).
     """
@@ -166,6 +169,7 @@ class PitchCorrector:
         a4: float = DEFAULT_A4,
         harmony: float = 0.0,
         pitch_hold_ms: float = 300.0,
+        pitch_method: str = "yin",
         keep_history: bool = False,
     ) -> None:
         if release_ms is None:
@@ -186,7 +190,7 @@ class PitchCorrector:
         self.max_correction = float(max_correction)
         self.amount = float(amount)
         self.yin = HeldPitchStream(sample_rate, hop_length=hop_length, hold_ms=pitch_hold_ms,
-                                   f_min=f_min, f_max=f_max, threshold=threshold)
+                                   method=pitch_method, f_min=f_min, f_max=f_max, threshold=threshold)
         self.shifter = FrequencyShifter(n_fft, overlap)
         self.snapper = NoteSnapper(key, hysteresis)
         self.harmony = float(harmony)

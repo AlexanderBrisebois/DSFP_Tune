@@ -93,6 +93,7 @@ def plot_pitch(
     title: str | None = None,
     f_min: float = 70.0,
     f_max: float = 1000.0,
+    method: str = "yin",
 ):
     """Figure with three panels sharing the time axis:
 
@@ -105,7 +106,7 @@ def plot_pitch(
     """
     samples = np.asarray(samples, dtype=np.float64)
     if track is None:
-        track = yin_track(samples, sample_rate, hop_length=256, f_min=f_min, f_max=f_max)
+        track = yin_track(samples, sample_rate, hop_length=256, method=method, f_min=f_min, f_max=f_max)
 
     fig, (ax_w, ax_s, ax_c) = plt.subplots(
         3, 1, figsize=(12, 8), sharex=True, gridspec_kw=dict(height_ratios=[1, 3.2, 1.3])
@@ -131,7 +132,7 @@ def plot_pitch(
     st, sf, s_db = spectrogram(samples, sample_rate, f_max=hi_hz * 1.05)
     vmax = s_db.max()
     ax_s.pcolormesh(st, sf, s_db, shading="auto", cmap="magma", vmin=vmax - 80, vmax=vmax, rasterized=True)
-    ax_s.plot(track.times, track.f0, color=F0_COLOR, linewidth=2.0, label="YIN f0")
+    ax_s.plot(track.times, track.f0, color=F0_COLOR, linewidth=2.0, label=f"{method.upper()} f0")
     ax_s.set_yscale("log")
     ax_s.set_ylim(lo_hz, hi_hz)
     labelled, all_notes = note_ticks(float(freq_to_midi(lo_hz)), float(freq_to_midi(hi_hz)))
@@ -171,7 +172,8 @@ def plot_pitch(
     return fig
 
 
-def plot_correction(original: np.ndarray, result, title: str | None = None, f_min: float = 70.0, f_max: float = 1000.0):
+def plot_correction(original: np.ndarray, result, title: str | None = None, f_min: float = 70.0, f_max: float = 1000.0,
+                    method: str = "yin"):
     """Before/after figure for :func:`dsfp_tune.correction.correct_pitch`.
 
     Top: pitch on a semitone grid. Grey = what was sung, orange = target notes, blue = the
@@ -181,7 +183,7 @@ def plot_correction(original: np.ndarray, result, title: str | None = None, f_mi
     ``result`` is a :class:`~dsfp_tune.correction.CorrectionResult`.
     """
     sr = result.sample_rate
-    out_track = yin_track(result.samples, sr, hop_length=256, f_min=f_min, f_max=f_max)
+    out_track = yin_track(result.samples, sr, hop_length=256, method=method, f_min=f_min, f_max=f_max)
     in_midi = np.where(result.voiced, freq_to_midi(result.f0), np.nan)
     out_midi = np.where(out_track.voiced, freq_to_midi(out_track.f0), np.nan)
     target = result.target_midi
@@ -258,11 +260,12 @@ class LivePitchPlot:
         window_seconds: float = 8.0,
         f_min: float = 70.0,
         f_max: float = 1000.0,
+        method: str = "yin",
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.hop_length = int(hop_length)
         self.window_seconds = float(window_seconds)
-        self.stream = YinStream(sample_rate, hop_length=hop_length, f_min=f_min, f_max=f_max)
+        self.stream = YinStream(sample_rate, hop_length=hop_length, method=method, f_min=f_min, f_max=f_max)
         self._midi: deque[float] = deque(maxlen=int(window_seconds * sample_rate / hop_length) + 1)
         self.latest = None
         self.samples_seen = 0

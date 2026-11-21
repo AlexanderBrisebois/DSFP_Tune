@@ -308,10 +308,14 @@ class YinStream:
     by about half a frame (plus the hop).
     """
 
-    def __init__(self, sample_rate: int, hop_length: int = 256, **yin_kwargs) -> None:
+    def __init__(self, sample_rate: int, hop_length: int = 256, method: str = "yin", **yin_kwargs) -> None:
         if hop_length < 1:
             raise ValueError("hop_length must be positive")
-        self.yin = Yin(sample_rate, **yin_kwargs)
+        # ``method="fft"`` swaps in the FFT peak detector (dsfp_tune/analysis/fft_pitch.py); it has
+        # the same detect()/frame_length interface, so everything below works unchanged.
+        from dsfp_tune.analysis.fft_pitch import make_pitch_detector
+
+        self.yin = make_pitch_detector(method, sample_rate, **yin_kwargs)
         self.hop_length = int(hop_length)
         self._buf = np.zeros(self.yin.frame_length, dtype=np.float64)
         self._since_last = 0
@@ -364,11 +368,13 @@ def yin_track(
     samples: np.ndarray,
     sample_rate: int,
     hop_length: int = 256,
+    method: str = "yin",
     **yin_kwargs,
 ) -> PitchTrack:
     """Run :class:`Yin` over a whole mono signal, one frame every ``hop_length`` samples.
 
     Extra keyword arguments go to :class:`Yin` (``f_min``, ``f_max``, ``threshold``, ...).
+    ``method="fft"`` uses :class:`~dsfp_tune.analysis.fft_pitch.FftPitch` instead (same output).
     The end of the signal is zero-padded so the final samples are analysed.
     """
     samples = np.asarray(samples)
@@ -377,7 +383,9 @@ def yin_track(
     if hop_length < 1:
         raise ValueError("hop_length must be positive")
 
-    yin = Yin(sample_rate, **yin_kwargs)
+    from dsfp_tune.analysis.fft_pitch import make_pitch_detector
+
+    yin = make_pitch_detector(method, sample_rate, **yin_kwargs)
     n = yin.frame_length
     n_frames = max(1, int(math.ceil(max(len(samples) - n, 0) / hop_length)) + 1)
     padded = np.zeros((n_frames - 1) * hop_length + n, dtype=np.float64)

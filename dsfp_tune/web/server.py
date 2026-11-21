@@ -6,11 +6,12 @@ GET  /                      the dashboard page (files in ``static/``)
 GET  /api/theory            tonics, scales and every key's notes, from :mod:`dsfp_tune.theory`
 GET  /api/settings          saved snap settings
 POST /api/settings          save snap settings (JSON body)
-POST /api/analyze           audio file as the raw body -> pitch track (load_audio + yin_track)
-POST /api/live/start        {"sample_rate": 48000} -> {"id": ...}; one HeldPitchStream per mic session
+POST /api/analyze[?pitch_method=yin|fft]
+                            audio file as the raw body -> pitch track (load_audio + yin_track)
+POST /api/live/start        {"sample_rate": 48000, "pitch_method": "yin"} -> {"id": ...}; one HeldPitchStream per mic session
 POST /api/live/<id>         raw little-endian float32 mono samples -> pitch estimates
 POST /api/live/<id>/stop    forget the session
-POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony=..
+POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony=..&pitch_method=..
                             [&release_ms=..&amount=..&hysteresis=..&note_window_ms=..
                              &note_jump=..&hold_ms=..&max_correction=..]   (advanced; see ADVANCED_LIMITS)
                             raw little-endian float32 mono samples (a microphone recording)
@@ -18,7 +19,8 @@ POST /api/autotune?sample_rate=..&retune_ms=..&mode=..&tonic=..&scale=..&harmony
                             summary JSON in the X-Autotune-Summary header
 
 The browser decodes the file itself for the waveform and playback; the server does the
-pitch analysis and correction, using the same code as the CLI.
+pitch analysis and correction, using the same code as the CLI. Wherever ``pitch_method`` is
+left out, the saved setting is used (``"yin"`` by default; ``"fft"`` = largest FFT peak).
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ from dsfp_tune.analysis import HeldPitchStream, hold_track, yin_track
 from dsfp_tune.correction import correct_pitch
 from dsfp_tune.io import AudioLoadError, load_audio, wav_bytes
 from dsfp_tune.theory import NOTE_NAMES_FLAT, NOTE_NAMES_SHARP, SCALES, Key
-from dsfp_tune.web.settings import SNAP_MODES, SnapSettings, load_settings, save_settings
+from dsfp_tune.web.settings import PITCH_METHODS, SNAP_MODES, SnapSettings, load_settings, save_settings
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -86,6 +88,7 @@ def theory_payload() -> dict:
         "scales": [{"id": s, "label": s.replace("_", " ").capitalize(), "size": len(SCALES[s])} for s in SCALES],
         "keys": keys,
         "snap_modes": list(SNAP_MODES),
+        "pitch_methods": list(PITCH_METHODS),
         "a4_hz": 440.0,
     }
 
@@ -94,12 +97,13 @@ def _f0_list(f0: np.ndarray, voiced: np.ndarray) -> list:
     return [round(float(f), 3) if v and math.isfinite(f) else None for f, v in zip(f0, voiced)]
 
 
-def analyze_samples(samples: np.ndarray, sample_rate: int) -> dict:
-    """Pitch track of a mono signal, as JSON-ready lists."""
+def analyze_samples(samples: np.ndarray, sample_rate: int, pitch_method: str = "yin") -> dict:
+    """Pitch track of a mono signal, as JSON-ready lists. ``pitch_method``: ``"yin"`` or ``"fft"``."""
     hop = _hop_for(sample_rate)
     f_max = min(F_MAX, sample_rate / 4)
     # Pitch hold: carry the pitch over short detection gaps inside notes (same as the autotune).
-    track = hold_track(yin_track(samples, sample_rate, hop_length=hop, f_min=F_MIN, f_max=f_max), samples)
+    track = hold_track(yin_track(samples, sample_rate, hop_length=hop, method=pitch_method,
+                                 f_min=F_MIN, f_max=f_max), samples)
     conf = np.clip(1.0 - track.aperiodicity, 0.0, 1.0)
     return {
         "sample_rate": int(sample_rate),
@@ -109,12 +113,13 @@ def analyze_samples(samples: np.ndarray, sample_rate: int) -> dict:
         "f0": _f0_list(track.f0, track.voiced),
         "confidence": [round(float(c), 3) for c in conf],
         "voiced_fraction": float(track.voiced.mean()) if len(track.voiced) else 0.0,
+        "pitch_method": pitch_method,
     }
 
 
-def analyze_file(path: str | Path) -> dict:
+def analyze_file(path: str | Path, pitch_method: str = "yin") -> dict:
     sig = load_audio(path, mono=True)
-    out = analyze_samples(sig.samples, sig.sample_rate)
+    out = analyze_samples(sig.samples, sig.sample_rate, pitch_method)
     out["source"] = Path(path).name
     return out
 
@@ -152,7 +157,8 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
     key = settings.key
     harmony = settings.harmony if key is not None and len(key.intervals) == 7 else 0.0
     result = correct_pitch(x, sample_rate, key=key, retune_ms=retune_ms, harmony=harmony,
-                           f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4), **advanced)
+                           pitch_method=settings.pitch_method, f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4),
+                           **advanced)
     samples = result.samples
     peak = float(np.max(np.abs(samples), initial=0.0))
     if harmony and peak > 0.99:  # lead + chord voices can exceed full scale: scale down instead of clipping
@@ -163,6 +169,7 @@ def autotune_samples(samples: np.ndarray, sample_rate: int, settings: SnapSettin
         "key": key.name if key is not None else None,
         "retune_ms": float(retune_ms),
         "harmony": float(harmony),
+        "pitch_method": settings.pitch_method,
         "advanced": {k: float(v) for k, v in advanced.items()},
         "duration": len(x) / sample_rate,
         "voiced_fraction": float(result.voiced.mean()) if len(result.voiced) else 0.0,
@@ -179,18 +186,21 @@ class LiveSessions:
         self._lock = threading.Lock()
         self._sessions: dict[str, dict] = {}
 
-    def start(self, sample_rate: int) -> dict:
+    def start(self, sample_rate: int, pitch_method: str = "yin") -> dict:
         sample_rate = int(sample_rate)
         if not 8000 <= sample_rate <= 192000:
             raise ValueError(f"unsupported sample rate {sample_rate}")
+        if pitch_method not in PITCH_METHODS:
+            raise ValueError(f"pitch_method must be one of {', '.join(PITCH_METHODS)}")
         hop = _hop_for(sample_rate)
-        stream = HeldPitchStream(sample_rate, hop_length=hop, f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
+        stream = HeldPitchStream(sample_rate, hop_length=hop, method=pitch_method,
+                                 f_min=F_MIN, f_max=min(F_MAX, sample_rate / 4))
         sid = uuid.uuid4().hex
         with self._lock:
             self._prune()
             self._sessions[sid] = {"stream": stream, "lock": threading.Lock(), "seen": time.monotonic()}
         return {"id": sid, "sample_rate": sample_rate, "hop_seconds": hop / sample_rate,
-                "frame_seconds": stream.yin.latency_seconds}
+                "frame_seconds": stream.yin.latency_seconds, "pitch_method": pitch_method}
 
     def push(self, sid: str, block: np.ndarray) -> list:
         with self._lock:
@@ -272,7 +282,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._autotune()
             if path == "/api/live/start":
                 data = json.loads(self._body() or b"{}")
-                return self._json(self.live.start(data.get("sample_rate", 48000)))
+                method = data.get("pitch_method") or load_settings(self.settings_path).pitch_method
+                return self._json(self.live.start(data.get("sample_rate", 48000), str(method)))
             if path.startswith("/api/live/"):
                 rest = path[len("/api/live/"):].strip("/").split("/")
                 if len(rest) == 2 and rest[1] == "stop":
@@ -291,6 +302,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._error(422, str(exc).splitlines()[0] + " (is ffmpeg installed?)")
 
     def _analyze(self):
+        q = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        method = q.get("pitch_method") or load_settings(self.settings_path).pitch_method
+        if method not in PITCH_METHODS:
+            raise ValueError(f"pitch_method must be one of {', '.join(PITCH_METHODS)}")
         name = Path(self.headers.get("X-Filename") or "upload.mp3").name
         suffix = Path(name).suffix.lower() or ".mp3"
         body = self._body()
@@ -300,7 +315,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             p = Path(tmp) / f"upload{suffix}"
             p.write_bytes(body)
             started = time.monotonic()
-            result = analyze_file(p)
+            result = analyze_file(p, method)
         result["source"] = name
         result["analysis_seconds"] = round(time.monotonic() - started, 3)
         return self._json(result)
@@ -310,7 +325,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if "sample_rate" not in q:
             raise ValueError("sample_rate query parameter is required")
         saved = load_settings(self.settings_path).to_dict()
-        settings = SnapSettings.from_dict({k: q.get(k, saved[k]) for k in ("mode", "tonic", "scale", "harmony")})
+        settings = SnapSettings.from_dict({k: q.get(k, saved[k]) for k in ("mode", "tonic", "scale", "harmony", "pitch_method")})
         raw = self._body()
         samples = np.frombuffer(raw[: len(raw) // 4 * 4], dtype="<f4")
         started = time.monotonic()

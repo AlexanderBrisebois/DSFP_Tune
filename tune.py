@@ -13,6 +13,7 @@
     python tune.py autotune take.wav --key "A minor" --retune-ms 0
     python tune.py autotune --live               # real-time correction (headphones!)
     python tune.py autotune take.wav --key C --harmony 0.5   # add the key's triad on each note
+    python tune.py pitch take.wav --pitch fft    # pitch from the largest FFT peak instead of YIN
 """
 
 from __future__ import annotations
@@ -84,13 +85,13 @@ def _cents_bar(cents: float, half_width: int = 10) -> str:
     return "[" + "".join(cells) + "]"
 
 
-def _summarize_pitch(samples: np.ndarray, sr: int, f_min: float, f_max: float) -> None:
+def _summarize_pitch(samples: np.ndarray, sr: int, f_min: float, f_max: float, method: str = "yin") -> None:
     from dsfp_tune.analysis import yin_track
     from dsfp_tune.theory import nearest_note
 
-    track = yin_track(samples, sr, hop_length=256, f_min=f_min, f_max=f_max)
+    track = yin_track(samples, sr, hop_length=256, method=method, f_min=f_min, f_max=f_max)
     v = track.voiced
-    print(f"pitch: {100 * v.mean():.0f}% of frames voiced", end="")
+    print(f"pitch ({method}): {100 * v.mean():.0f}% of frames voiced", end="")
     if v.any():
         f = track.f0[v]
         lo, hi = np.percentile(f, [5, 95])
@@ -100,7 +101,7 @@ def _summarize_pitch(samples: np.ndarray, sr: int, f_min: float, f_max: float) -
         print(" (no pitch found)")
 
 
-def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True) -> None:
+def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True, method="yin") -> None:
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -109,7 +110,7 @@ def _show_pitch_plot(samples, sr, f_min, f_max, title, save=None, show=True) -> 
 
     from dsfp_tune.plotting import plot_pitch
 
-    fig = plot_pitch(samples, sr, title=title, f_min=f_min, f_max=f_max)
+    fig = plot_pitch(samples, sr, title=title, f_min=f_min, f_max=f_max, method=method)
     if save:
         fig.savefig(save, dpi=150)
         print(f"saved plot {save}")
@@ -147,7 +148,7 @@ def cmd_record(args: argparse.Namespace) -> None:
 
     sig, peak = _record_from_mic(args.seconds, args.sr, args.device)
     if peak > 0:
-        _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max)
+        _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max, args.pitch)
 
     out = None
     if not args.no_save:
@@ -157,7 +158,7 @@ def cmd_record(args: argparse.Namespace) -> None:
 
     if not args.no_plot and peak > 0:
         _show_pitch_plot(sig.samples, sig.sample_rate, args.f_min, args.f_max,
-                         title=str(out) if out else "microphone recording")
+                         title=str(out) if out else "microphone recording", method=args.pitch)
 
 
 def cmd_live(args: argparse.Namespace) -> None:
@@ -165,7 +166,7 @@ def cmd_live(args: argparse.Namespace) -> None:
         from dsfp_tune.plotting import LivePitchPlot
 
         print("Live pitch window open - sing! Close the window to stop.")
-        view = LivePitchPlot(args.sr, f_min=args.f_min, f_max=args.f_max)
+        view = LivePitchPlot(args.sr, f_min=args.f_min, f_max=args.f_max, method=args.pitch)
         view.run(device=_device_arg(args.device))
         if not view.heard_anything:
             print(MIC_PERMISSION_HINT, file=sys.stderr)
@@ -177,8 +178,8 @@ def cmd_live(args: argparse.Namespace) -> None:
     from dsfp_tune.theory import nearest_note
 
     hop = 256
-    stream = YinStream(args.sr, hop_length=hop, f_min=args.f_min, f_max=args.f_max)
-    print(f"Live pitch (analysis frame {stream.yin.latency_seconds * 1000:.0f} ms). Ctrl+C to stop.")
+    stream = YinStream(args.sr, hop_length=hop, method=args.pitch, f_min=args.f_min, f_max=args.f_max)
+    print(f"Live pitch, {args.pitch} (analysis frame {stream.yin.latency_seconds * 1000:.0f} ms). Ctrl+C to stop.")
     heard_anything = False
     last_print = 0.0
     latest = None
@@ -215,9 +216,9 @@ def cmd_live(args: argparse.Namespace) -> None:
 def cmd_pitch(args: argparse.Namespace) -> None:
     sig = load_audio(args.path)
     print(sig)
-    _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max)
+    _summarize_pitch(sig.samples, sig.sample_rate, args.f_min, args.f_max, args.pitch)
     _show_pitch_plot(sig.samples, sig.sample_rate, args.f_min, args.f_max, title=str(args.path),
-                     save=args.save, show=not args.no_show)
+                     save=args.save, show=not args.no_show, method=args.pitch)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +258,7 @@ def _correction_settings(args: argparse.Namespace, default_fft: int) -> dict:
         amount=args.amount,
         f_min=args.f_min,
         f_max=args.f_max,
+        pitch_method=args.pitch,
         n_fft=args.fft_size or default_fft,
     )
 
@@ -286,7 +288,7 @@ def cmd_autotune(args: argparse.Namespace) -> None:
         stem = rec_path.stem if rec_path else "mic"
 
     key = settings["key"]
-    print(f"correcting: key {key.name if key else 'chromatic (any semitone)'}, retune {args.retune_ms:g} ms"
+    print(f"correcting: key {key.name if key else 'chromatic (any semitone)'}, retune {args.retune_ms:g} ms, pitch {args.pitch}"
           + (f", chord harmony {args.harmony:g}" if args.harmony else "") + " ...")
     result = correct_pitch(sig.samples, sig.sample_rate, **settings)
 
@@ -325,7 +327,8 @@ def cmd_autotune(args: argparse.Namespace) -> None:
             return
         from dsfp_tune.plotting import plot_correction
 
-        fig = plot_correction(sig.samples, result, title=str(out), f_min=args.f_min, f_max=args.f_max)
+        fig = plot_correction(sig.samples, result, title=str(out), f_min=args.f_min, f_max=args.f_max,
+                              method=args.pitch)
         print("showing plot (close the window to continue)")
         plt.show()
         plt.close(fig)
@@ -394,6 +397,8 @@ def cmd_web(args: argparse.Namespace) -> None:
 def _add_pitch_range(p: argparse.ArgumentParser) -> None:
     p.add_argument("--f-min", type=float, default=70.0, help="lowest pitch to detect, Hz (default 70)")
     p.add_argument("--f-max", type=float, default=1000.0, help="highest pitch to detect, Hz (default 1000)")
+    p.add_argument("--pitch", choices=["yin", "fft"], default="yin",
+                   help="pitch detector: yin (default) or fft (largest FFT peak, parabolic interpolation)")
 
 
 def _add_mic(p: argparse.ArgumentParser) -> None:

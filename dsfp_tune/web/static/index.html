@@ -31,6 +31,14 @@
         <button type="button" role="tab" data-source="mic" aria-selected="false">Microphone</button>
       </div>
 
+      <div class="pitch-method">
+        <span class="field-label">Pitch detection</span>
+        <div class="segmented segmented--mini" id="pitchMethod">
+          <button type="button" data-method="yin" aria-pressed="true" title="YIN: time-domain autocorrelation (the default)">YIN</button>
+          <button type="button" data-method="fft" aria-pressed="false" title="Largest peak of the Fourier transform, with parabolic interpolation">FFT peak</button>
+        </div>
+      </div>
+
       <div class="source-pane" data-pane="file">
         <label class="dropzone" id="dropzone">
           <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg">

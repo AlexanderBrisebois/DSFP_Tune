@@ -35,7 +35,7 @@ const ADVANCED_STORE = 'dsfp-advanced';
 
 const state = {
   theory: null,
-  settings: { mode: 'chromatic', tonic: 0, scale: 'major', harmony: 0 },
+  settings: { mode: 'chromatic', tonic: 0, scale: 'major', harmony: 0, pitch_method: 'yin' },
   source: 'file',
   file: null,      // { name, duration, sampleRate, samples, peaks, track, midi }
   live: null,      // see startMic()
@@ -147,6 +147,70 @@ function buildSettingsUI() {
   const harmony = $('harmonyRange');
   harmony.addEventListener('input', () => { $('harmonyValue').textContent = harmonyLabel(+harmony.value / 100); });
   harmony.addEventListener('change', () => { state.settings.harmony = +harmony.value / 100; settingsChanged(); });
+  $('pitchMethod').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-method]');
+    if (!b || b.dataset.method === state.settings.pitch_method) return;
+    state.settings.pitch_method = b.dataset.method;
+    settingsChanged();
+    pitchMethodChanged();
+  });
+}
+
+const PITCH_LABELS = { yin: 'YIN', fft: 'FFT peak' };
+function pitchMethod() { return state.settings.pitch_method || 'yin'; }
+
+/** New pitch detector: re-analyse the loaded file, and switch a running microphone over. */
+async function pitchMethodChanged() {
+  syncServerStatus();
+  const F = state.file;
+  if (F && F.bytes) {
+    const method = pitchMethod();
+    $('busy').hidden = false; $('busyText').textContent = `Detecting pitch (${PITCH_LABELS[method]})…`;
+    try {
+      const track = await api(`/api/analyze?pitch_method=${method}`, {
+        method: 'POST', headers: { 'X-Filename': F.name, 'Content-Type': 'application/octet-stream' }, body: F.bytes,
+      });
+      if (state.file === F && pitchMethod() === method) {
+        F.track = track;
+        F.midi = track.f0.map((f) => (f ? freqToMidi(f) : null));
+        F.hist = histogram(F.midi);
+        F.range = fileRange(F.midi);
+        $('fileMeta').textContent = fileMetaText(F.duration, track);
+      }
+    } catch (err) {
+      $('fileMeta').textContent = `Pitch analysis failed: ${err.message}`;
+    } finally {
+      $('busy').hidden = true;
+      requestDraw();
+    }
+  }
+  const L = state.live;
+  if (L && L.running) {
+    try {
+      const session = await api('/api/live/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sample_rate: L.sampleRate, pitch_method: pitchMethod() }),
+      });
+      if (state.live !== L || !L.running) { fetch(`/api/live/${session.id}/stop`, { method: 'POST' }).catch(() => {}); return; }
+      const old = L.id;
+      L.id = session.id; L.frame = session.frame_seconds;
+      // A request to the old session may still be in flight; let it finish before forgetting it.
+      setTimeout(() => fetch(`/api/live/${old}/stop`, { method: 'POST' }).catch(() => {}), 3000);
+    } catch (err) {
+      $('micHint').textContent = `Couldn't switch the pitch detector: ${err.message}`;
+      $('micHint').classList.add('is-error');
+    }
+  }
+}
+
+function fileMetaText(duration, track) {
+  return `${fmtTime(duration)} · ${track.sample_rate / 1000} kHz · `
+    + `${Math.round(track.voiced_fraction * 100)}% pitched (${PITCH_LABELS[track.pitch_method] || 'YIN'}) · analysed in ${track.analysis_seconds.toFixed(1)} s`;
+}
+
+function syncServerStatus() {
+  if ($('serverStatus').classList.contains('is-error')) return;
+  $('serverStatus').textContent = `Connected to the local server · pitch by dsfp_tune ${PITCH_LABELS[pitchMethod()]}`;
 }
 
 function harmonyLabel(level) { return level > 0 ? `${Math.round(level * 100)}%` : 'Off'; }
@@ -173,6 +237,7 @@ function syncSettingsUI() {
   for (const b of $('snapModes').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === s.mode));
   $('tonicSelect').value = String(s.tonic);
   $('scaleSelect').value = s.scale;
+  for (const b of $('pitchMethod').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.method === pitchMethod()));
   const keyMode = s.mode === 'key';
   $('keyFields').classList.toggle('is-disabled', !keyMode);
   const k = keyInfo();
@@ -669,7 +734,7 @@ async function loadFile(file) {
   requestDraw();
 
   const bytes = await file.arrayBuffer();
-  const analysis = api('/api/analyze', {
+  const analysis = api(`/api/analyze?pitch_method=${pitchMethod()}`, {
     method: 'POST', headers: { 'X-Filename': file.name, 'Content-Type': 'application/octet-stream' }, body: bytes,
   });
   try {
@@ -682,7 +747,7 @@ async function loadFile(file) {
     const url = URL.createObjectURL(file);
     player.src = url;
     state.file = {
-      name: file.name, url, duration: audio.duration, sampleRate: audio.sampleRate, samples,
+      name: file.name, bytes, url, duration: audio.duration, sampleRate: audio.sampleRate, samples,
       peaks: buildPeaks(samples), track, midi, hist: histogram(midi), range: fileRange(midi),
     };
     state.view = { t0: 0, t1: audio.duration > 30 ? 20 : audio.duration };
@@ -690,8 +755,7 @@ async function loadFile(file) {
     state.fileWhich = 'original';
     syncFileVersionUI();
     autotuneFile();
-    $('fileMeta').textContent = `${fmtTime(audio.duration)} · ${track.sample_rate / 1000} kHz · `
-      + `${Math.round(track.voiced_fraction * 100)}% pitched · analysed in ${track.analysis_seconds.toFixed(1)} s`;
+    $('fileMeta').textContent = fileMetaText(audio.duration, track);
     $('playButton').disabled = false;
     $('viewHint').textContent = 'scroll to move through time · pinch or Ctrl+scroll to zoom · drag the playhead to seek';
   } catch (err) {
@@ -835,7 +899,7 @@ async function startMic() {
   let session;
   try {
     session = await api('/api/live/start', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sample_rate: sr }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sample_rate: sr, pitch_method: pitchMethod() }),
     });
   } catch (err) {
     stream.getTracks().forEach((t) => t.stop()); ctx.close();
@@ -997,6 +1061,7 @@ async function autotuneRecording() {
   const q = new URLSearchParams({
     sample_rate: R.sampleRate, mode: s.mode, tonic: s.tonic, scale: s.scale,
     harmony: harmonyAvailable() ? (s.harmony || 0) : 0,
+    pitch_method: pitchMethod(),
     ...advancedParams(),
   });
   try {
@@ -1018,7 +1083,7 @@ async function autotuneRecording() {
     $('downloadTuned').hidden = false;
     const target = summary.key || 'the nearest notes';
     setRecHint(summary.voiced_fraction > 0
-      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}${summary.advanced && summary.advanced.amount < 1 ? ` · amount ${Math.round(summary.advanced.amount * 100)}%` : ''}`
+      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}${summary.pitch_method === 'fft' ? ' · FFT-peak pitch' : ''}${summary.advanced && summary.advanced.amount < 1 ? ` · amount ${Math.round(summary.advanced.amount * 100)}%` : ''}`
       : 'No sung pitch found in this take, so the autotuned version sounds the same.');
   } catch (err) {
     if (state.recording !== R || job !== R.job) return;
@@ -1222,7 +1287,7 @@ async function init() {
     const [theory, settings] = await Promise.all([api('/api/theory'), api('/api/settings')]);
     state.theory = theory; state.settings = settings;
     buildSettingsUI(); syncSettingsUI();
-    $('serverStatus').textContent = 'Connected to the local server · pitch by dsfp_tune YIN';
+    syncServerStatus();
   } catch (err) {
     $('serverStatus').textContent = `Can't reach the local server (${err.message}). Start it with: python tune.py web`;
     $('serverStatus').classList.add('is-error');

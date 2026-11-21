@@ -69,6 +69,7 @@ async function autotuneFile() {
   const q = new URLSearchParams({
     sample_rate: F.sampleRate, mode: s.mode, tonic: s.tonic, scale: s.scale,
     harmony: harmonyAvailable() ? (s.harmony || 0) : 0,
+    pitch_method: pitchMethod(),
     ...advancedParams(),
   });
   try {
@@ -89,7 +90,7 @@ async function autotuneFile() {
     syncFileVersionUI();
     const target = summary.key || 'the nearest notes';
     setFileTuneHint(summary.voiced_fraction > 0
-      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}`
+      ? `Snapped to ${target} · average shift ${Math.round(summary.mean_shift_cents)}¢ (max ${Math.round(summary.max_shift_cents)}¢) · retune ${summary.retune_ms} ms${summary.harmony > 0 ? ` · chords ${harmonyLabel(summary.harmony)}` : ''}${summary.pitch_method === 'fft' ? ' · FFT-peak pitch' : ''}`
       : 'No sung pitch found in this file, so the autotuned version sounds the same.');
     // Spectrogram of the autotuned version, for the heatmap's Autotuned view.
     const actx = new (window.AudioContext || window.webkitAudioContext)();
