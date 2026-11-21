@@ -1,7 +1,7 @@
 # Agent: Claude (working for Alex): pitch detection, microphone, plots, autotune pipeline, dashboard playback
 
-**Status:** idle, waiting for the next task from Alex
-**Last updated:** 2026-11-20 15:45 PT
+**Status:** AU/VST3 plugin pushed; porting pitch hold and fixing what the code review finds
+**Last updated:** 2026-11-20 16:05 PT
 
 ## Done
 | What | Files | Commit |
@@ -18,12 +18,15 @@
 | Real-time duplex audio (`DuplexStream`: mic → process → output) and `play()` | `dsfp_tune/io/microphone.py` | `1f8dcb1` |
 | Before/after plot `plot_correction()` (sung vs target vs corrected on a note grid, cents off target) | `dsfp_tune/plotting.py` | `1f8dcb1` |
 | CLI `python tune.py autotune [file] [--key "A minor"] [--retune-ms N] [--live]`: records (or loads), corrects, saves `data/output/<name>_tuned.wav`, plays original then corrected, plots. `--live` refuses to run on built-in speakers (feedback risk) without `--allow-speakers` | `tune.py`, README | `1f8dcb1` |
-| **Dashboard: autotuned playback of microphone takes.** The page keeps the whole take while the mic runs (up to 5 min). On Stop, a "Last recording" panel offers ▶ Original / ▶ Autotuned, a retune-speed slider and WAV downloads. The new `POST /api/autotune?sample_rate=&retune_ms=&mode=&tonic=&scale=` takes raw float32 and returns a corrected WAV (summary JSON in the `X-Autotune-Summary` header), via `autotune_samples()` → `correct_pitch()`. It uses the page's snap settings, and changing them or the slider re-processes the take. Verified end to end in headless Chromium with a fake-mic WAV: notes at +36/−39/+31¢ came back within ±1¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `dsfp_tune/io/audio_io.py` (`wav_bytes`), `tests/test_web_autotune.py`, README | this commit |
-| **Correction knobs.** New `PitchCorrector` arguments: `amount` (0-1, correction strength; chord voices follow the lead's applied correction) and `release_ms` (let-go time constant; `None` = same as `retune_ms`, so default behaviour is unchanged). All tuning arguments are now validated. CLI: `autotune --amount 0.5 --release-ms 200` | `dsfp_tune/correction.py`, `tune.py`, `tests/test_correction.py` | this commit |
-| **Dashboard Advanced tab.** The Snapping card is now "Correction", with tabs Snapping / Advanced. Advanced has 8 sliders (attack, release, amount, note stickiness, note decision window, instant note change, hold, max correction), defined in one `ADVANCED` list in `app.js`. Attack stays in sync with the recording panel's retune slider; values are kept in localStorage (not in `SnapSettings`); Reset to defaults. `/api/autotune` takes them as query parameters, range-checked against `ADVANCED_LIMITS` in `server.py`, and echoes them in `summary["advanced"]`. Verified in headless Chromium: amount 50% took a take from +36/−39/+31¢ to +19/−21/+16¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `tests/test_web_autotune.py`, README | this commit |
+| **Dashboard: autotuned playback of microphone takes.** The page keeps the whole take while the mic runs (up to 5 min). On Stop, a "Last recording" panel offers ▶ Original / ▶ Autotuned, a retune-speed slider and WAV downloads. The new `POST /api/autotune?sample_rate=&retune_ms=&mode=&tonic=&scale=` takes raw float32 and returns a corrected WAV (summary JSON in the `X-Autotune-Summary` header), via `autotune_samples()` → `correct_pitch()`. It uses the page's snap settings, and changing them or the slider re-processes the take. Verified end to end in headless Chromium with a fake-mic WAV: notes at +36/−39/+31¢ came back within ±1¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `dsfp_tune/io/audio_io.py` (`wav_bytes`), `tests/test_web_autotune.py`, README | `03f239a` |
+| **Correction knobs.** New `PitchCorrector` arguments: `amount` (0-1, correction strength; chord voices follow the lead's applied correction) and `release_ms` (let-go time constant; `None` = same as `retune_ms`, so default behaviour is unchanged). All tuning arguments are now validated. CLI: `autotune --amount 0.5 --release-ms 200` | `dsfp_tune/correction.py`, `tune.py`, `tests/test_correction.py` | `1790733` |
+| **Dashboard Advanced tab.** The Snapping card is now "Correction", with tabs Snapping / Advanced. Advanced has 8 sliders (attack, release, amount, note stickiness, note decision window, instant note change, hold, max correction), defined in one `ADVANCED` list in `app.js`. Attack stays in sync with the recording panel's retune slider; values are kept in localStorage (not in `SnapSettings`); Reset to defaults. `/api/autotune` takes them as query parameters, range-checked against `ADVANCED_LIMITS` in `server.py`, and echoes them in `summary["advanced"]`. Verified in headless Chromium: amount 50% took a take from +36/−39/+31¢ to +19/−21/+16¢ | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}`, `tests/test_web_autotune.py`, README | `1790733` |
+| **Audio plugin: AU (GarageBand/Logic) + VST3 + Standalone.** C++17 port of YIN, the phase-vocoder shifter and `PitchCorrector` (no dependencies, allocation-free audio path), wrapped with JUCE 8.0.4 (CMake + Ninja, no Xcode needed). Controls: snap mode, key, scale, and the 8 Advanced knobs. Builds copy into `~/Library/Audio/Plug-Ins`. `auval` passes (11–192 kHz, mono/stereo). `tests/test_cpp_port.py` compares the C++ against the Python on the same audio (YIN, shifter, full corrector: same target note every frame; output differs only by float32 rounding), and also renders through the *built* AU and VST3 with `dsfp_plugin_host` | `cpp/` (see `cpp/README.md`), `tests/test_cpp_port.py`, README | this commit |
 
 ## In progress
-Nothing.
+- Porting Ullas's pitch hold (`dsfp_tune/analysis/pitch_hold.py`) to the C++ corrector. Until then the C++ tests compare against Python with the hold off (plain `YinStream`).
+- A multi-agent review of the plugin (port fidelity, real-time safety, DAW integration, UI/tests) is running; fixes follow.
+- Plugin UI cosmetics: the readout text touches its border, the knob value boxes have white outlines, and the knob rows are tight.
 
 ## Likely next (not started)
 - Try `python tune.py autotune` on real singing; tune the defaults (`retune_ms`, hysteresis, YIN threshold).
@@ -31,6 +34,10 @@ Nothing.
 - Live latency is about 120 ms on the MacBook's built-in mic: roughly 95 ms of driver buffering plus 23 ms shifter frame. A USB interface or smaller frames would help.
 
 ## Notes for other agents
+- **The plugin is a C++ copy of the Python DSP.** If you change `yin.py`, `freq_shift.py` or `correction.py`, the C++ in `cpp/src/dsp/` needs the same change, or `tests/test_cpp_port.py` will fail (when the C++ is built). Tell me, and I'll port it.
+- **Chord harmony is not in the plugin yet** (Ullas's area). The plugin mono-sums its input and writes the same corrected signal to every output channel.
+- **The plugin's Release knob is independent** (default 25 ms); in Python `release_ms=None` follows `retune_ms`.
+- **Building the plugin needs JUCE** (AGPLv3 or commercial licence). CMake uses `cpp/build/JUCE` or downloads 8.0.4; `cpp/build/` is git-ignored.
 - **Ullas: I edited your dashboard files** to add autotuned playback. Changes:
   - `server.py`: a new `/api/autotune` route and `autotune_samples()`; `_send()` takes optional extra headers.
   - `index.html`: a recording panel in the Microphone pane. The Snapping hint no longer says correction isn't built.

@@ -74,7 +74,7 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | Real-time autotune through headphones — `tune.py autotune --live` | ✅ Works; ~120 ms total latency on the built-in mic |
 | Test on real vocal recordings; tune YIN and correction settings | 🔜 Next |
 | Formant preservation, phase locking (less "phasey" sound), lower live latency | ⏳ Planned |
-| C++ kernels / plugin | ⏳ Later, if needed |
+| Audio plugin: AU (GarageBand, Logic) + VST3 + Standalone, C++ port of the DSP — `cpp/` | ✅ Done (no chord harmony or pitch hold yet) |
 
 ## Layout
 
@@ -92,7 +92,7 @@ DSFP_Tune/
 │   ├── correction.py    # autotune: target note + retune + shifting    [done]
 │   └── plotting.py      # pitch plots (static, live, before/after)     [done]
 ├── AGENTS/              # per-contributor agent status files (coordination)
-├── cpp/                 # optional C++ (pybind11) kernels for speed
+├── cpp/                 # AU / VST3 / Standalone plugin: C++ port of the DSP + JUCE wrapper (see cpp/README.md)
 ├── tests/               # pytest suite
 ├── scripts/             # one-off helper scripts
 ├── notebooks/           # Jupyter exploration
@@ -101,6 +101,18 @@ DSFP_Tune/
 ├── data/output/         # processed audio (git-ignored)
 ├── pytest.ini
 └── requirements.txt
+```
+
+## Audio plugin (GarageBand / DAWs)
+
+`cpp/` builds **DSFP Tune** as an Audio Unit (GarageBand, Logic), a VST3 (most other DAWs) and a Standalone app.
+It's a C++ port of the same YIN → snap → retune → phase-vocoder pipeline, with the same knobs, and it's tested to
+match the Python version to floating-point rounding. Build and use it as described in [cpp/README.md](cpp/README.md):
+
+```bash
+cmake -S cpp -B cpp/build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build/cmake --target DSFPTune_AU DSFPTune_VST3 DSFPTune_Standalone
+auval -v aufx Dstn Dsfp     # GarageBand only loads AUs that pass Apple's validator
 ```
 
 ## Setup
