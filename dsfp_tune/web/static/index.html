@@ -166,8 +166,10 @@
         <span class="panel__hint" id="viewHint"></span>
       </div>
       <div class="canvas-wrap canvas-wrap--wave"><canvas id="waveCanvas"></canvas><div class="empty" id="waveEmpty">Load an audio file or start the microphone</div></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
     </section>
 
+    <div class="split">
     <section class="card panel panel--grow">
       <div class="panel__head">
         <h2>Pitch on the scale</h2>
@@ -179,7 +181,24 @@
         </div>
       </div>
       <div class="canvas-wrap canvas-wrap--roll"><canvas id="rollCanvas"></canvas><div class="busy" id="busy" hidden><span class="spinner"></span><span id="busyText">Detecting pitch…</span></div></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
     </section>
+
+    <section class="card panel panel--grow">
+      <div class="panel__head">
+        <h2>Spectrogram</h2>
+        <div class="segmented segmented--mini" id="specToggle" hidden>
+          <button type="button" data-which="original" aria-pressed="true">Original</button>
+          <button type="button" data-which="tuned" id="specTuned" aria-pressed="false">Autotuned</button>
+        </div>
+        <label class="check"><input type="checkbox" id="specPitch" checked> pitch line</label>
+        <span class="panel__hint" id="specHint"></span>
+        <div class="spec-scale"><span>quiet</span><i></i><span>loud</span></div>
+      </div>
+      <div class="canvas-wrap canvas-wrap--roll canvas-wrap--spec"><canvas id="specCanvas"></canvas></div>
+      <div class="timebar is-full" aria-label="Scroll through time"><div class="timebar__thumb"></div></div>
+    </section>
+    </div>
 
     <section class="card panel">
       <div class="panel__head">
@@ -191,6 +210,8 @@
   </main>
 </div>
 <audio id="player" preload="auto"></audio>
+<script src="spectrogram.js"></script>
+<script src="scroll.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

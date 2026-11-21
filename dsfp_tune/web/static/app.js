@@ -233,7 +233,16 @@ function niceStep(span, px, minPx = 70) {
 /** Current time window and data for whichever source is showing. */
 function currentView() {
   if (state.source === 'mic' && state.live) {
-    const t1 = Math.max(LIVE_WINDOW_S, state.live.samples / state.live.sampleRate);
+    const L = state.live;
+    let t1 = Math.max(LIVE_WINDOW_S, L.samples / L.sampleRate);
+    const pt = takePlayhead();
+    if (!L.running && L.viewT1) t1 = L.viewT1;
+    const offScreen = pt !== null && (pt < t1 - LIVE_WINDOW_S || pt > t1);
+    const userScrolled = performance.now() - (L.userScroll || 0) < 1500;
+    if (pt !== null && !userScrolled && ((!recPlayer.paused && !scrub) || offScreen)) {
+      // Follow the playhead, three quarters of the way across.
+      L.viewT1 = t1 = Math.min(Math.max(LIVE_WINDOW_S, pt + LIVE_WINDOW_S / 4), Math.max(LIVE_WINDOW_S, state.recording.duration));
+    }
     return { t0: t1 - LIVE_WINDOW_S, t1, live: true };
   }
   if (state.source === 'file' && state.file) return { ...state.view, live: false };
@@ -272,17 +281,23 @@ function drawWave() {
   ctx.globalAlpha = 0.85;
   const span = view.t1 - view.t0;
   if (view.live) {
-    const L = state.live, sr = L.sampleRate, ring = L.ring;
-    const endSample = L.samples, startSample = endSample - LIVE_WINDOW_S * sr;
+    const L = state.live, sr = L.sampleRate, ring = L.ring, R = state.recording;
+    const take = !L.running && R && R.sampleRate === sr ? R.samples : null;
+    const startSample = view.t0 * sr, endSample = Math.min(L.samples, Math.round(view.t1 * sr));
     for (let x = 0; x < w; x++) {
       const a = Math.floor(startSample + (x / w) * LIVE_WINDOW_S * sr);
-      const b = Math.floor(startSample + ((x + 1) / w) * LIVE_WINDOW_S * sr);
+      const b = Math.min(endSample, Math.floor(startSample + ((x + 1) / w) * LIVE_WINDOW_S * sr));
       let lo = 0, hi = 0;
-      for (let i = Math.max(a, endSample - ring.length, 0); i < b; i++) {
-        const v = ring[i % ring.length]; if (v < lo) lo = v; if (v > hi) hi = v;
+      if (take) {
+        for (let i = Math.max(a, 0); i < Math.min(b, take.length); i++) { const v = take[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      } else {
+        for (let i = Math.max(a, L.samples - ring.length, 0); i < b; i++) {
+          const v = ring[i % ring.length]; if (v < lo) lo = v; if (v > hi) hi = v;
+        }
       }
       if (hi > lo) ctx.fillRect(x, mid - hi * amp, 1, Math.max(1, (hi - lo) * amp));
     }
+    drawPlayhead(ctx, w, h, view);
   } else {
     const F = state.file, sr = F.sampleRate, x0 = F.samples;
     for (let x = 0; x < w; x++) {
@@ -304,9 +319,26 @@ function drawWave() {
   ctx.globalAlpha = 1;
 }
 
+/** Where the recorded take is playing (seconds), or null when it isn't. */
+function takePlayhead() {
+  const L = state.live, R = state.recording;
+  if (!L || L.running || !R) return null;
+  if (recPlayer.dataset.which) return recPlayer.currentTime;
+  return Number.isFinite(R.cursor) ? R.cursor : null;   // where Play will start from
+}
+
+/** Move the take's playback position (also while it plays). */
+function seekTake(t) {
+  const R = state.recording;
+  if (!R) return;
+  R.cursor = Math.max(0, Math.min(R.duration, t));
+  if (recPlayer.dataset.which) recPlayer.currentTime = R.cursor;
+  requestDraw();
+}
+
 function drawPlayhead(ctx, w, h, view, x0 = 0) {
-  const t = $('player').currentTime;
-  if (t < view.t0 || t > view.t1) return;
+  const t = view.live ? takePlayhead() : $('player').currentTime;
+  if (t === null || t < view.t0 || t > view.t1) return;
   const x = x0 + ((t - view.t0) / (view.t1 - view.t0)) * (w - x0);
   ctx.globalAlpha = 1;
   ctx.fillStyle = state.colors.text;
@@ -354,6 +386,7 @@ function drawRoll() {
   const view = currentView();
   const plotH = h - AXIS_H, plotW = w - GUTTER;
   const { lo, hi } = view ? rollRange(view) : { lo: 48, hi: 72 };
+  state.rollRange = { lo, hi };   // the spectrogram uses the same note range
   const y = (m) => plotH - ((m - lo) / (hi - lo)) * plotH;
   const pcs = keySet(), tonic = state.settings.tonic;
   const laneH = plotH / (hi - lo);
@@ -395,14 +428,14 @@ function drawRoll() {
     const x = X(t);
     ctx.fillStyle = c.grid; ctx.fillRect(Math.round(x), 0, 1, plotH);
     ctx.fillStyle = c.muted;
-    ctx.fillText(view.live ? `${(t - view.t1).toFixed(step < 1 ? 1 : 0)} s` : axisTime(t, step), x, h - 5);
+    ctx.fillText(view.live && state.live.running ? `${(t - view.t1).toFixed(step < 1 ? 1 : 0)} s` : axisTime(t, step), x, h - 5);
   }
 
   // Pitch and snap target.
   const fr = rollFrames(view);
   ctx.save();
   ctx.beginPath(); ctx.rect(GUTTER + 1, 0, plotW, plotH); ctx.clip();
-  const first = view.live ? 0 : Math.max(0, Math.floor((view.t0 - state.file.track.t0) / state.file.track.hop_seconds) - 1);
+  const first = view.live ? Math.max(0, lowerBound(state.live.times, view.t0) - 1) : Math.max(0, Math.floor((view.t0 - state.file.track.t0) / state.file.track.hop_seconds) - 1);
   const stride = view.live ? 1 : Math.max(1, Math.floor(span / state.file.track.hop_seconds / (plotW * 2)));
   const mode = state.settings.mode;
 
@@ -443,7 +476,7 @@ function drawRoll() {
   }
   ctx.restore();
 
-  if (!view.live) drawPlayhead(ctx, w, plotH, view, GUTTER);
+  drawPlayhead(ctx, w, plotH, view, GUTTER);
 
   // Hover read-out.
   if (rollHover && !view.live) {
@@ -532,9 +565,23 @@ function drawKeys() {
 // ---------------------------------------------------------------------------
 // Read-out (current note, cents needle, snap target)
 // ---------------------------------------------------------------------------
+function lowerBound(arr, x) {   // first index with arr[i] >= x
+  let a = 0, b = arr.length;
+  while (a < b) { const m = (a + b) >> 1; if (arr[m] < x) a = m + 1; else b = m; }
+  return a;
+}
+
 function currentPitch() {
   if (state.source === 'mic' && state.live) {
-    const L = state.live, now = L.samples / L.sampleRate;
+    const L = state.live, pt = takePlayhead();
+    if (pt !== null) {   // playing the take back: the pitch at the playhead
+      const i = lowerBound(L.times, pt);
+      for (let j = Math.min(i, L.times.length - 1); j >= 0 && L.times[j] > pt - HOLD_S; j--) {
+        if (L.midi[j] !== null) return { midi: L.midi[j], f0: L.f0[j] };
+      }
+      return null;
+    }
+    const now = L.samples / L.sampleRate;
     for (let i = L.midi.length - 1; i >= 0 && L.times[i] > now - HOLD_S - 0.1; i--) {
       if (L.midi[i] !== null) return { midi: L.midi[i], f0: L.f0[i] };
     }
@@ -577,7 +624,7 @@ function drawReadout() {
 }
 
 function drawAll() {
-  drawWave(); drawRoll(); drawKeys(); drawReadout();
+  drawWave(); drawRoll(); drawSpec(); drawKeys(); drawReadout(); syncTimebars();
   const F = state.file;
   $('timeLabel').textContent = `${fmtTime($('player').currentTime)} / ${fmtTime(F ? F.duration : 0)}`;
 }
@@ -590,7 +637,7 @@ function requestDraw() {
 }
 
 function loop() {
-  if (state.playing || (state.source === 'mic' && state.live && state.live.running)) drawAll();
+  if (state.playing || !recPlayer.paused || (state.source === 'mic' && state.live && state.live.running)) drawAll();
   requestAnimationFrame(loop);
 }
 
@@ -629,11 +676,12 @@ async function loadFile(file) {
       name: file.name, url, duration: audio.duration, sampleRate: audio.sampleRate, samples,
       peaks: buildPeaks(samples), track, midi, hist: histogram(midi), range: fileRange(midi),
     };
-    state.view = { t0: 0, t1: audio.duration };
+    state.view = { t0: 0, t1: audio.duration > 30 ? 20 : audio.duration };
+    specForFile(state.file);
     $('fileMeta').textContent = `${fmtTime(audio.duration)} · ${track.sample_rate / 1000} kHz · `
       + `${Math.round(track.voiced_fraction * 100)}% pitched · analysed in ${track.analysis_seconds.toFixed(1)} s`;
     $('playButton').disabled = false;
-    $('viewHint').textContent = 'scroll to zoom · drag to pan · double-click to reset · click to seek';
+    $('viewHint').textContent = 'scroll to move through time · pinch or Ctrl+scroll to zoom · drag the playhead to seek';
   } catch (err) {
     $('fileMeta').textContent = `Couldn't load this file: ${err.message}`;
     $('fileMeta').classList.add('hint', 'is-error');
@@ -661,23 +709,42 @@ function fileRange(midi) {
 }
 
 // Zoom / pan / seek on the waveform and the pitch roll.
-let drag = null, rollHover = null;
+let drag = null, rollHover = null, scrub = false;
+const takeShown = () => state.source === 'mic' && state.live && !state.live.running && state.recording;
+
 function attachViewControls(canvas, x0) {
+  const playheadX = () => {   // canvas x of the playhead, or null
+    const v = currentView(); if (!v) return null;
+    const t = v.live ? takePlayhead() : $('player').currentTime;
+    if (t === null || t < v.t0 || t > v.t1) return null;
+    return x0 + ((t - v.t0) / (v.t1 - v.t0)) * (canvas.clientWidth - x0);
+  };
+  const nearPlayhead = (e) => {
+    const px = playheadX(); if (px === null) return false;
+    return Math.abs(e.clientX - canvas.getBoundingClientRect().left - px) <= 7;
+  };
+  const seek = (e) => {
+    const t = timeAt(e);
+    if (takeShown()) seekTake(t); else { $('player').currentTime = t; requestDraw(); }
+  };
   const timeAt = (e) => {
-    const r = canvas.getBoundingClientRect(), v = state.view;
+    const r = canvas.getBoundingClientRect(), v = currentView();
     const frac = Math.max(0, Math.min(1, (e.clientX - r.left - x0) / (r.width - x0)));
     return v.t0 + frac * (v.t1 - v.t0);
   };
   canvas.addEventListener('wheel', (e) => {
-    if (state.source !== 'file' || !state.file) return;
+    const tl = timeline();
+    if (!tl) return;
     e.preventDefault();
+    const zoom = (e.ctrlKey || e.metaKey) && state.source === 'file';   // trackpad pinch arrives as Ctrl+wheel
+    if (!zoom) {
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      scrollTimeBy((d / canvas.clientWidth) * (tl.t1 - tl.t0));
+      return;
+    }
     const v = state.view, D = state.file.duration;
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) {
-      const d = ((e.shiftKey ? e.deltaY : e.deltaX) / canvas.clientWidth) * (v.t1 - v.t0);
-      const t0 = Math.max(0, Math.min(D - (v.t1 - v.t0), v.t0 + d));
-      state.view = { t0, t1: t0 + (v.t1 - v.t0) };
-    } else {
-      const t = timeAt(e), f = Math.exp(e.deltaY * 0.0015);
+    {
+      const t = timeAt(e), f = Math.exp(e.deltaY * 0.005);
       const span = Math.max(0.25, Math.min(D, (v.t1 - v.t0) * f));
       let t0 = t - ((t - v.t0) / (v.t1 - v.t0)) * span;
       t0 = Math.max(0, Math.min(D - span, t0));
@@ -686,8 +753,13 @@ function attachViewControls(canvas, x0) {
     requestDraw();
   }, { passive: false });
   canvas.addEventListener('pointerdown', (e) => {
-    if (state.source !== 'file' || !state.file) return;
-    drag = { x: e.clientX, view: { ...state.view }, moved: false, canvas };
+    const take = takeShown();
+    if (!take && (state.source !== 'file' || !state.file)) return;
+    // On a take every drag scrubs; on a file, grab the playhead to scrub or drag elsewhere to pan.
+    const isScrub = take || nearPlayhead(e);
+    drag = { x: e.clientX, view: state.view ? { ...state.view } : null, moved: false, canvas, scrub: isScrub };
+    scrub = isScrub;
+    if (isScrub) seek(e);
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
@@ -696,7 +768,9 @@ function attachViewControls(canvas, x0) {
       rollHover = state.file && state.source === 'file' && e.clientX - r.left > x0 ? { x: e.clientX - r.left } : null;
       requestDraw();
     }
+    if (!drag) canvas.style.cursor = nearPlayhead(e) || takeShown() ? 'ew-resize' : '';
     if (!drag || drag.canvas !== canvas) return;
+    if (drag.scrub) { drag.moved = true; seek(e); return; }
     const dx = e.clientX - drag.x;
     if (Math.abs(dx) > 3) drag.moved = true;
     if (!drag.moved) return;
@@ -707,8 +781,8 @@ function attachViewControls(canvas, x0) {
   });
   canvas.addEventListener('pointerleave', () => { if (rollHover) { rollHover = null; requestDraw(); } });
   canvas.addEventListener('pointerup', (e) => {
-    if (drag && !drag.moved) { $('player').currentTime = timeAt(e); requestDraw(); }
-    drag = null;
+    if (drag && !drag.moved && !drag.scrub) seek(e);
+    drag = null; scrub = false;
   });
   canvas.addEventListener('dblclick', () => {
     if (state.file) { state.view = { t0: 0, t1: state.file.duration }; requestDraw(); }
@@ -817,7 +891,7 @@ async function pump() {
       if (m !== null) L.hist[mod12(Math.round(m))] += 1;
     }
     // Keep only what's on screen (plus a little).
-    const cut = L.times.findIndex((t) => t > L.samples / L.sampleRate - LIVE_WINDOW_S - 1);
+    const cut = L.times.findIndex((t) => t > L.samples / L.sampleRate - MAX_RECORDING_S - LIVE_WINDOW_S);
     if (cut > 2000) for (const a of [L.times, L.midi, L.f0, L.conf]) a.splice(0, cut);
   } catch (err) {
     $('micHint').textContent = err.message; $('micHint').classList.add('is-error');
@@ -865,6 +939,7 @@ function finishRecording(L) {
   $('recording').hidden = false;
   $('recMeta').textContent = `${fmtTime(R.duration)} · ${R.sampleRate / 1000} kHz${R.capped ? ' · first 5 min' : ''}`;
   $('downloadOriginal').href = R.originalUrl;
+  specForRecording(R);
   autotuneRecording();
 }
 
@@ -924,6 +999,7 @@ async function autotuneRecording() {
     const blob = await res.blob();
     if (state.recording !== R || job !== R.job) return;   // superseded by a newer take or setting
     R.tunedUrl = URL.createObjectURL(blob);
+    specForTuned(R, blob);
     R.summary = summary;
     $('playTuned').disabled = false;
     $('downloadTuned').href = R.tunedUrl;
@@ -945,14 +1021,18 @@ function playRecording(which) {
   const url = which === 'tuned' ? R.tunedUrl : R.originalUrl;
   if (!url) return;
   $('player').pause();
+  let from = recPlayer.dataset.which ? recPlayer.currentTime : (R.cursor || 0);
+  if (from >= R.duration - 0.05) from = 0;   // at the end: start again
   recPlayer.src = url;
   recPlayer.dataset.which = which;
-  recPlayer.currentTime = 0;
+  recPlayer.currentTime = from;
+  recPlayer.addEventListener('loadedmetadata', () => { recPlayer.currentTime = from; }, { once: true });
   recPlayer.play().catch((err) => setRecHint(`Playback failed: ${err.message}`, 'error'));
   syncRecordingButtons();
 }
 
 function stopRecordingPlayback() {
+  if (state.recording && recPlayer.dataset.which) state.recording.cursor = recPlayer.currentTime;
   recPlayer.pause();
   recPlayer.dataset.which = '';
   syncRecordingButtons();
@@ -1061,7 +1141,7 @@ function setSource(src) {
   for (const b of $('sourceTabs').querySelectorAll('button')) b.setAttribute('aria-selected', String(b.dataset.source === src));
   for (const p of document.querySelectorAll('.source-pane')) p.hidden = p.dataset.pane !== src;
   $('transport').style.visibility = src === 'file' ? 'visible' : 'hidden';
-  $('viewHint').textContent = src === 'file' && state.file ? 'scroll to zoom · drag to pan · double-click to reset · click to seek'
+  $('viewHint').textContent = src === 'file' && state.file ? 'scroll to move through time · pinch or Ctrl+scroll to zoom · drag the playhead to seek'
     : src === 'mic' ? `last ${LIVE_WINDOW_S} seconds` : '';
   if (src === 'file') { stopMic(); stopRecordingPlayback(); } else $('player').pause();
   requestDraw();
@@ -1097,7 +1177,7 @@ async function init() {
   $('playButton').addEventListener('click', togglePlay);
   $('playOriginal').addEventListener('click', () => playRecording('original'));
   $('playTuned').addEventListener('click', () => playRecording('tuned'));
-  for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, syncRecordingButtons);
+  for (const ev of ['play', 'pause', 'ended']) recPlayer.addEventListener(ev, () => { syncRecordingButtons(); requestDraw(); });
   // The recording panel's retune slider is the same setting as Advanced > Attack.
   $('retuneRange').addEventListener('input', (e) => setAdvanced('retune_ms', +e.target.value, false));
   $('retuneRange').addEventListener('change', (e) => setAdvanced('retune_ms', +e.target.value, true));
@@ -1118,6 +1198,9 @@ async function init() {
   });
   attachViewControls($('waveCanvas'), 0);
   attachViewControls($('rollCanvas'), GUTTER);
+  attachViewControls($('specCanvas'), GUTTER);
+  initSpec();
+  initTimebars();
   new ResizeObserver(requestDraw).observe(document.querySelector('.main'));
 
   try {

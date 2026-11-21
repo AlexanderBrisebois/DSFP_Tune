@@ -72,7 +72,8 @@ Same settings as the dashboard's Correction card and the `tune.py autotune` opti
 | Max correction | `max_correction` | 200 cents |
 
 Stereo tracks are summed to mono for pitch detection and correction, and the result goes to both channels.
-Chord harmony (`--harmony`) isn't in the plugin yet.
+Not in the plugin yet: chord harmony (`--harmony`) and the pitch hold (`pitch_hold_ms`, which bridges short
+YIN dropouts inside a note).
 
 ## Tests
 

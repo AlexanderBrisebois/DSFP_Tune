@@ -163,8 +163,8 @@ def test_chord_held_through_pitch_dropouts_but_not_silence():
     on = np.array([bool(f.chord) for f in pc.history])
     voiced = np.array([f.voiced for f in pc.history])
     gap = (t > 0.65) & (t < 0.75)
-    assert not voiced[gap].any() and on[gap].all()        # pitch lost, chord kept
+    assert voiced[gap].all() and on[gap].all()            # pitch carried over, chord kept
     assert not on[t > 1.55].any()                         # singer stopped: chord gone
-    pc = PitchCorrector(SR, key="C major", harmony=0.5, chord_hold_ms=0, keep_history=True)
+    pc = PitchCorrector(SR, key="C major", harmony=0.5, pitch_hold_ms=0, keep_history=True)
     pc.process(x)
-    assert not any(f.chord for f, tt in zip(pc.history, t) if 0.65 < tt < 0.75)
+    assert not any(f.chord for f, tt in zip(pc.history, t) if 0.72 < tt < 0.78)   # without the pitch hold

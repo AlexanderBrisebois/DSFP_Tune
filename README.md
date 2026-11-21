@@ -74,7 +74,7 @@ audio ──► 1. pitch detection ──► 2. target note ──► 3. pitch s
 | Real-time autotune through headphones — `tune.py autotune --live` | ✅ Works; ~120 ms total latency on the built-in mic |
 | Test on real vocal recordings; tune YIN and correction settings | 🔜 Next |
 | Formant preservation, phase locking (less "phasey" sound), lower live latency | ⏳ Planned |
-| Audio plugin: AU (GarageBand, Logic) + VST3 + Standalone, C++ port of the DSP — `cpp/` | ✅ Done (no chord harmony yet) |
+| Audio plugin: AU (GarageBand, Logic) + VST3 + Standalone, C++ port of the DSP — `cpp/` | ✅ Done (no chord harmony or pitch hold yet) |
 
 ## Layout
 

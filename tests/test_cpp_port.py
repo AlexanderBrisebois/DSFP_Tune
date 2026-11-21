@@ -3,6 +3,9 @@
 Runs the `dsfp_offline` tool built from cpp/ (skipped if it hasn't been built):
 
     cmake -S cpp -B cpp/build/core -G Ninja -DDSFP_BUILD_PLUGIN=OFF && cmake --build cpp/build/core
+
+The pitch hold (dsfp_tune/analysis/pitch_hold.py) isn't in the C++ yet, so the corrector is compared
+with Python's running plain YIN (see py_corrector).
 """
 
 import csv
@@ -13,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dsfp_tune.analysis import yin_track
+from dsfp_tune.analysis import YinStream, yin_track
 from dsfp_tune.correction import PitchCorrector
 from dsfp_tune.synthesis import freq_shift
 from dsfp_tune.theory import Key
@@ -66,6 +69,13 @@ def phrase(sr=SR):
     parts = [held(57, 35, 25, 0.8, sr), np.zeros(int(0.15 * sr)), held(60, -40, 20, 0.7, sr),
              held(64, 30, 0, 0.5, sr), 0.05 * rng.standard_normal(int(0.2 * sr)), held(62, -25, 30, 0.8, sr)]
     return f32(np.concatenate(parts) + 0.002 * rng.standard_normal(sum(map(len, parts))))
+
+
+def py_corrector(**kwargs):
+    """Python PitchCorrector as the C++ port works today: plain YIN, without the pitch hold."""
+    pc = PitchCorrector(SR, **kwargs)
+    pc.yin = YinStream(SR, hop_length=pc.hop_length)
+    return pc
 
 
 # --- YIN ---------------------------------------------------------------------------------------
@@ -132,7 +142,7 @@ CASES = {
 def test_corrector_matches_python(tmp_path, case):
     py_kwargs, cc_opts = CASES[case]
     x = phrase()
-    pc = PitchCorrector(SR, keep_history=True, **py_kwargs)
+    pc = py_corrector(keep_history=True, **py_kwargs)
     lat = pc.latency
     py_out = pc.process(np.concatenate([x, np.zeros(lat)]))[lat : lat + len(x)]
 
@@ -191,7 +201,7 @@ def test_built_plugin_matches_python(tmp_path, fmt, case):
     y = np.fromfile(out, dtype="<f4").astype(np.float64)
 
     # The plugin uses 1024-point frames at 44.1/48 kHz (lower latency than the Python default of 2048).
-    pc = PitchCorrector(SR, n_fft=1024, **py_kwargs)
+    pc = py_corrector(n_fft=1024, **py_kwargs)
     lat = pc.latency
     ref = pc.process(np.concatenate([x, np.zeros(lat)]))[lat : lat + len(x)]
     assert len(y) == len(x)

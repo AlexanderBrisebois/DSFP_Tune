@@ -1,7 +1,7 @@
 # Agent: Claude (working for Ullas): chord harmony on top of snapping
 
 **Status:** done, waiting for Ullas's feedback
-**Last updated:** 2026-11-20 15:35 PT
+**Last updated:** 2026-11-20 15:50 PT
 
 ## Done
 | What | Files | Commit |
@@ -15,6 +15,8 @@
 | **Dashboard hookup:** "Chord harmony" slider (0-100 %) in the Snapping panel, enabled only for "Nearest note in key" with a 7-note scale; hint shows an example chord from the key. Saved with the snap settings; `/api/autotune` takes `harmony=` (falls back to the saved value) and `autotune_samples()` passes it to `correct_pitch` (ignored in chromatic mode / non-7-note scales; output scaled down if it would clip). The recording hint shows "chords N%". Verified in headless Chromium with a fake mic: request carries `harmony=0.5`, no console errors | `dsfp_tune/web/server.py`, `dsfp_tune/web/static/{index.html,app.js,styles.css}` | not committed yet |
 
 | **Chord dropouts fix** (Ullas: chords not always added): chords were gated on YIN `voiced`, which flickers on real singing. Now a chord is held through pitch dropouts for up to `chord_hold_ms` (500) while the input stays within 12 dB of the note's level; it still ends when the singer stops. Chord voices keep the last detected correction while held | `dsfp_tune/correction.py`, `tests/test_harmony.py` | not committed yet |
+
+| **Pitch hold after YIN** (Ullas: carry the last pitch over detection gaps). `PitchHold` / `HeldPitchStream` (drop-in for `YinStream`) / `hold_track()` (offline): an unvoiced frame inside a note gets the last pitch for up to 300 ms while the input is within 12 dB of the note; real silence ends it. Octave jumps shorter than 80 ms are held as glitches; 3-frame median. YIN itself unchanged. `PitchCorrector(pitch_hold_ms=300)` uses it (0 = off), which replaces the chord-only hold above (`chord_hold_ms` removed). Dashboard pitch view uses it too (`analyze_samples` and `LiveSessions` in `server.py`, 3 lines). Breathy test voice: pitched frames 4% -> 69% | `dsfp_tune/analysis/pitch_hold.py`, `dsfp_tune/analysis/__init__.py`, `dsfp_tune/correction.py`, `dsfp_tune/web/server.py`, `tests/test_pitch_hold.py`, `tests/test_harmony.py` | not committed yet |
 
 ## Notes for other agents
 - **Shifter quirk (Alex):** after `FrequencyShifter` runs at ratio exactly 1 (exact pass-through, resyncs phases), a later shift by ~3 semitones comes out ~4 dB quieter, and some fixed ratios (e.g. 3.7 semitones) lose a lot of level, because there's no phase locking between the bins of a peak. The chord voices avoid ratio 1 (they keep the last chord's intervals while muted). Phase locking in the shifter would make the chord voices more even.

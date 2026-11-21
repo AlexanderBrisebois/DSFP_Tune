@@ -1,6 +1,6 @@
 """Pitch correction (autotune): detect pitch, choose the target note, shift toward it.
 
-    audio ──► YinStream (f0) ──► NoteSnapper (target note) ──► retune smoothing ──► FrequencyShifter
+    audio ──► YIN + pitch hold (f0) ──► NoteSnapper (target note) ──► retune smoothing ──► FrequencyShifter
                                   key from dsfp_tune.theory      (glide speed)       (ratio = 2**(c/12))
 
 * :class:`NoteSnapper` — nearest allowed note (any semitone, or only notes of a key) with
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from dsfp_tune.analysis import PitchEstimate, YinStream
+from dsfp_tune.analysis import HeldPitchStream, PitchEstimate
 from dsfp_tune.synthesis import FrequencyShifter
 from dsfp_tune.theory import Key, diatonic_triad, freq_to_midi, parse_key
 from dsfp_tune.theory.notes import DEFAULT_A4
@@ -137,10 +137,10 @@ class PitchCorrector:
     harmony:
         Level of each added chord voice (third and fifth) relative to the lead, e.g. 0.5.
         0 (default) = off. Needs a 7-note ``key``.
-    chord_hold_ms:
-        Once a chord starts it is held through pitch-detection dropouts for up to this long
-        while the input stays loud (within 12 dB of the note), so a breathy or noisy note keeps
-        its chord. It fades out when the singer stops, or the pitch is lost for longer.
+    pitch_hold_ms:
+        When YIN loses the pitch inside a note (breathy tone, noise), carry the last pitch over
+        for up to this long while the input stays loud, and ignore brief octave jumps (see
+        :class:`~dsfp_tune.analysis.PitchHold`). Keeps correction and chords steady. 0 = off.
     keep_history:
         Store every :class:`CorrectionFrame` in :attr:`history` (for plots).
     """
@@ -165,7 +165,7 @@ class PitchCorrector:
         hop_length: int = 256,
         a4: float = DEFAULT_A4,
         harmony: float = 0.0,
-        chord_hold_ms: float = 500.0,
+        pitch_hold_ms: float = 300.0,
         keep_history: bool = False,
     ) -> None:
         if release_ms is None:
@@ -185,7 +185,8 @@ class PitchCorrector:
         self.a4 = float(a4)
         self.max_correction = float(max_correction)
         self.amount = float(amount)
-        self.yin = YinStream(sample_rate, hop_length=hop_length, f_min=f_min, f_max=f_max, threshold=threshold)
+        self.yin = HeldPitchStream(sample_rate, hop_length=hop_length, hold_ms=pitch_hold_ms,
+                                   f_min=f_min, f_max=f_max, threshold=threshold)
         self.shifter = FrequencyShifter(n_fft, overlap)
         self.snapper = NoteSnapper(key, hysteresis)
         self.harmony = float(harmony)
@@ -208,11 +209,6 @@ class PitchCorrector:
         self._env_decay = math.exp(-1.0 / (0.015 * sample_rate))
         # The level is decided on input time; delay it by the shifter latency to line up with the output.
         self._env_delay = np.zeros(self.shifter.latency)
-        self._chord_hold_frames = int(round(chord_hold_ms / 1000.0 * sample_rate / hop_length))
-        self._chord_held = 0          # estimates since the chord's note was last detected
-        self._note_rms = 0.0          # input level of the current note (while detected)
-        self._hop_energy = 0.0        # sum of squares of the input since the last estimate
-        self._voice_correction = 0.0  # lead correction when the note was last detected
 
         dt = hop_length / sample_rate
         self._alpha = 1.0 if retune_ms == 0 else 1.0 - math.exp(-dt * 1000.0 / retune_ms)
@@ -270,27 +266,16 @@ class PitchCorrector:
         self.ratio = 2.0 ** (self.correction / 12.0)
 
         if self._voices:
-            rms = math.sqrt(self._hop_energy / self.hop_length)
-            self._hop_energy = 0.0
-            if est.voiced and not math.isnan(target):
+            if not math.isnan(target):
                 root = int(target)
                 if not self._chord or self._chord[0] != root:
                     self._chord = diatonic_triad(self.snapper.key, root)
                     self._intervals = (self._chord[1] - root, self._chord[2] - root)
-                self._note_rms = rms if not self._note_rms else 0.9 * self._note_rms + 0.1 * rms
-                self._chord_held = 0
-                self._voice_correction = self.correction
-                self._env_next = 1.0
-            elif self._chord and self._chord_held < self._chord_hold_frames and rms > 0.25 * self._note_rms:
-                # Pitch lost for a moment but the note is still sounding: keep the chord.
-                self._chord_held += 1
                 self._env_next = 1.0
             else:
                 self._chord = ()
-                self._note_rms = 0.0
-                self._chord_held = 0
                 self._env_next = 0.0
-            self.voice_ratios = tuple(2.0 ** ((self._voice_correction + iv) / 12.0) for iv in self._intervals)
+            self.voice_ratios = tuple(2.0 ** ((self.correction + iv) / 12.0) for iv in self._intervals)
 
         self._n_estimates += 1
         end = self._n_estimates * self.hop_length
@@ -317,8 +302,6 @@ class PitchCorrector:
             # for the audio right after it.
             take = min(self.hop_length - self._since_estimate, len(block) - pos)
             chunk = block[pos : pos + take]
-            if self._voices:
-                self._hop_energy += float(np.dot(chunk, chunk))
             for est in self.yin.push(chunk):
                 self._update(est)
             out[pos : pos + take] = self.shifter.process(chunk, self.ratio)
